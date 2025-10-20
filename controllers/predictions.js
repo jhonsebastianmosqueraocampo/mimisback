@@ -1,6 +1,7 @@
 const Predictions = require("../models/prediction.js");
 const Fixture = require("../models/fixture.js");
 const PredictionOdds = require("../models/predictionOdds.js");
+const { PRIORITY_COUNTRIES, PRIORITY_TOURNAMENTS } = require("../data/leaguesPriority");
 const axios = require("axios");
 require("dotenv").config();
 
@@ -53,6 +54,7 @@ const getFixturePrediction = async (req, res) => {
 
     return res.json({ status: "success", prediction });
   } catch (error) {
+    console.log(error)
     return res.json({
       status: "error",
       message: "An error was found",
@@ -62,23 +64,31 @@ const getFixturePrediction = async (req, res) => {
 
 const getUpcomingPredictionsOdds = async (req, res) => {
   try {
-    const tenMinutes = 1000 * 60 * 10;
-
+    const TEN_MINUTES = 1000 * 60 * 10;
     const now = new Date();
-    const thirtyMinutesLater = new Date(now.getTime() + 3 * 30 * 60 * 1000);
+    const thirtyMinutesLater = new Date(now.getTime() + 3 * 30 * 60 * 1000); // 90 minutos adelante aprox.
 
-    // 1. Traer fixtures próximos que aún no han finalizado
-    const upcomingFixtures = await Fixture.find({
+    // 1️⃣ Buscar fixtures próximos (entre ahora y los siguientes 90 min) que aún no han finalizado
+    let upcomingFixtures = await Fixture.find({
       "status.short": { $nin: ["FT", "AET", "PEN", "CANC"] },
-      // fecha entre ahora y 30 minutos en adelante
       date: { $gte: now, $lte: thirtyMinutesLater },
     }).lean();
+
+    // 2️⃣ Aplicar filtro de prioridad (igual que en getMatchesDay)
+    upcomingFixtures = upcomingFixtures.filter((fixture) => {
+      const isPriority =
+        PRIORITY_COUNTRIES.includes(fixture.league?.country) ||
+        PRIORITY_TOURNAMENTS.some((name) =>
+          fixture.league?.name?.toLowerCase().includes(name.toLowerCase())
+        );
+      return isPriority;
+    });
 
     if (!upcomingFixtures.length) {
       return res.json({
         status: "success",
         data: [],
-        message: "No upcoming fixtures found",
+        message: "No hay fixtures próximos en ligas prioritarias",
       });
     }
 
@@ -89,49 +99,53 @@ const getUpcomingPredictionsOdds = async (req, res) => {
         fixtureId: fixture.fixtureId,
       });
 
-      const needsUpdate = !record || now - record.lastUpdate > tenMinutes;
+      const needsUpdate = !record || now - record.lastUpdate > TEN_MINUTES;
 
       if (needsUpdate) {
-        // 2. Llamadas a la API-Football
-        const [predRes, oddsRes] = await Promise.all([
-          axios.get(`${API_URL}/predictions`, {
-            params: { fixture: fixture.fixtureId },
-            headers: { "x-apisports-key": API_KEY },
-          }),
-          axios.get(`${API_URL}/odds`, {
-            params: { fixture: fixture.fixtureId },
-            headers: { "x-apisports-key": API_KEY },
-          }),
-        ]);
+        try {
+          // 3️⃣ Llamadas a la API-Football (predictions + odds)
+          const [predRes, oddsRes] = await Promise.all([
+            axios.get(`${API_URL}/predictions`, {
+              params: { fixture: fixture.fixtureId },
+              headers: { "x-apisports-key": API_KEY },
+            }),
+            axios.get(`${API_URL}/odds`, {
+              params: { fixture: fixture.fixtureId },
+              headers: { "x-apisports-key": API_KEY },
+            }),
+          ]);
 
-        const prediction = predRes.data.response[0] || null;
-        const odds = oddsRes.data.response || [];
+          const prediction = predRes.data.response[0] || null;
+          const odds = oddsRes.data.response || [];
 
-        if (record) {
-          record.set({
-            predictions: prediction,
-            odds,
-            lastUpdate: now,
-          });
-          await record.save();
-        } else {
-          record = new PredictionOdds({
-            fixtureId: fixture.fixtureId,
-            leagueId: fixture.leagueId,
-            season: fixture.season,
-            predictions: prediction,
-            odds,
-            lastUpdate: now,
-          });
-          await record.save();
+          if (record) {
+            record.set({
+              predictions: prediction,
+              odds,
+              lastUpdate: now,
+            });
+            await record.save();
+          } else {
+            record = await PredictionOdds.create({
+              fixtureId: fixture.fixtureId,
+              leagueId: fixture.leagueId,
+              season: fixture.season,
+              predictions: prediction,
+              odds,
+              lastUpdate: now,
+            });
+          }
+        } catch (apiError) {
+          console.warn(`⚠️ Error en API-Football para fixture ${fixture.fixtureId}:`, apiError.message);
+          continue; // Saltar fixture si falla
         }
       }
 
       results.push({
         fixture,
-        predictions: record.predictions,
-        odds: record.odds,
-        lastUpdate: record.lastUpdate,
+        predictions: record?.predictions || null,
+        odds: record?.odds || [],
+        lastUpdate: record?.lastUpdate || now,
       });
     }
 
@@ -140,6 +154,7 @@ const getUpcomingPredictionsOdds = async (req, res) => {
       predictionodds: results,
     });
   } catch (error) {
+    console.error("❌ Error en getUpcomingPredictionsOdds:", error);
     return res.status(500).json({
       status: "error",
       message: "Error fetching predictions and odds",

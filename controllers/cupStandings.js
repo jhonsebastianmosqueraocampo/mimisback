@@ -1,27 +1,58 @@
 const axios = require("axios");
 const GroupStanding = require("../models/groupStanding");
 const CupStanding = require("../models/cupStanding");
+const { getCurrentSeason } = require("../helper/getCurrentSeason");
 require("dotenv").config();
 
 const API_URL = process.env.API_URL;
 const API_KEY = process.env.API_FOOTBALL_KEY;
 
+// 🕒 Función auxiliar para obtener intervalo de refresco dinámico
+const getRefreshInterval = (hasLiveMatches) => {
+  return hasLiveMatches ? 5 * 60 * 1000 : 2 * 60 * 60 * 1000; // 5 min o 2h
+};
+
 const getCupStandings = async (req, res) => {
   const leagueId = parseInt(req.params.leagueId, 10);
-  const season = parseInt(req.params.season, 10);
+  let season = parseInt(req.params.season, 10);
+
+  if (season === 0) {
+    season = await getCurrentSeason({ leagueId: leagueId });
+  }
 
   if (isNaN(leagueId) || !leagueId || isNaN(season) || !season) {
-    return res.status(400).json({ status: "error", message: "Invalid leagueId or season" });
+    return res.status(400).json({
+      status: "error",
+      message: "Invalid leagueId or season",
+    });
   }
 
   try {
     const now = new Date();
 
-    const latestGroup = await GroupStanding.findOne({ leagueId, season }).sort({ lastUpdate: -1 });
-    const latestFixture = await CupStanding.findOne({ leagueId, season }).sort({ lastUpdate: -1 });
+    // Buscar la última actualización guardada
+    const latestGroup = await GroupStanding.findOne({ leagueId, season }).sort({
+      lastUpdate: -1,
+    });
+    const latestFixture = await CupStanding.findOne({ leagueId, season }).sort({
+      lastUpdate: -1,
+    });
 
-    const groupRecent = latestGroup && now - latestGroup.lastUpdate < 1000 * 60 * 60;
-    const fixtureRecent = latestFixture && now - latestFixture.lastUpdate < 1000 * 60 * 60;
+    // 🟢 Detectar si hay partidos en vivo (para dar prioridad)
+    const hasLiveMatches = await CupStanding.exists({
+      leagueId,
+      season,
+      status: { $in: ["1H", "HT", "2H", "ET", "BT", "P", "LIVE", "INT"] },
+    });
+
+    const REFRESH_INTERVAL = getRefreshInterval(hasLiveMatches);
+
+    const groupRecent =
+      latestGroup && now - latestGroup.lastUpdate < REFRESH_INTERVAL;
+    const fixtureRecent =
+      latestFixture && now - latestFixture.lastUpdate < REFRESH_INTERVAL;
+
+    // ⚡ Si los datos son recientes, no llamar a la API
     if (groupRecent && fixtureRecent) {
       const groupPhase = await GroupStanding.find({ leagueId, season });
       const knockoutPhase = await CupStanding.find({ leagueId, season });
@@ -30,9 +61,11 @@ const getCupStandings = async (req, res) => {
         hasGroupPhase: groupPhase.length > 0,
         groupPhase,
         knockoutPhase,
+        updated: false, // indicador de que no se actualizó desde la API
       });
     }
 
+    // 🏆 Obtener standings (fase de grupos)
     const standingsRes = await axios.get(`${API_URL}/standings`, {
       headers: { "x-apisports-key": API_KEY },
       params: { league: leagueId, season },
@@ -77,6 +110,7 @@ const getCupStandings = async (req, res) => {
       }
     }
 
+    // 🧩 Obtener fixtures (fase eliminatoria)
     const fixturesRes = await axios.get(`${API_URL}/fixtures`, {
       headers: { "x-apisports-key": API_KEY },
       params: { league: leagueId, season },
@@ -119,18 +153,27 @@ const getCupStandings = async (req, res) => {
       );
     }
 
+    // 🔁 Consultar datos actualizados desde la DB
     const knockoutPhase = await CupStanding.find({ leagueId, season });
-    const groupPhaseFinal = groupPhase.length ? await GroupStanding.find({ leagueId, season }) : null;
+    const groupPhaseFinal =
+      groupPhase.length > 0
+        ? await GroupStanding.find({ leagueId, season })
+        : [];
 
     return res.json({
       status: "success",
-      hasGroupPhase: groupPhaseFinal !== null,
+      hasGroupPhase: groupPhaseFinal.length > 0,
       groupPhase: groupPhaseFinal,
       knockoutPhase,
+      updated: true, // indicador de que sí se actualizó desde la API
+      refreshInterval: hasLiveMatches ? "5m" : "2h", // info útil para logs o frontend
     });
-
   } catch (error) {
-    return res.json({ status: "error", message: "An error was found. Please, try again!" });
+    console.error("Error in getCupStandings:", error?.response?.data || error);
+    return res.json({
+      status: "error",
+      message: "An error was found. Please, try again!",
+    });
   }
 };
 

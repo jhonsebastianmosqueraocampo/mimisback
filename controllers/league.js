@@ -2,6 +2,7 @@ const axios = require("axios");
 const { getLeagueFromCountry } = require("../helper/getLeagueFromCountry");
 const League = require("../models/league");
 const TeamLeague = require("../models/teamLeague");
+const { getCurrentSeason } = require("../helper/getCurrentSeason.js");
 require("dotenv").config();
 
 const API_KEY = process.env.API_FOOTBALL_KEY;
@@ -40,7 +41,7 @@ const leaguesFromCountry = async (req, res) => {
 
 const leaguesByTeam = async (req, res) => {
   const teamId = parseInt(req.params.teamId, 10);
-  const season = parseInt(req.params.season, 10);
+  let season = parseInt(req.params.season, 10);
 
   if (isNaN(teamId) || !teamId || isNaN(season) || !season) {
     return res
@@ -48,52 +49,56 @@ const leaguesByTeam = async (req, res) => {
       .json({ status: "error", message: "Invalid teamId or season" });
   }
 
+  if (season === 0) {
+    season = await getCurrentSeason({ teamId: teamId });
+  }
+
   try {
+    // 1️⃣ Buscar ligas del equipo en la base de datos
     const existingLeagues = await TeamLeague.find({
       "team.id": teamId,
-      season: season,
-    });
+      season,
+    }).sort({ lastUpdate: -1 });
 
-    if (existingLeagues.length > 0) {
-      const now = new Date();
-      const eightDaysAgo = new Date(now.getTime() - 8 * 24 * 60 * 60 * 1000);
+    const now = dayjs();
+    const lastUpdate = existingLeagues[0]?.lastUpdate
+      ? dayjs(existingLeagues[0].lastUpdate)
+      : null;
 
-      const lastUpdated = existingLeagues[0].lastUpdate;
+    // 2️⃣ Calcular si es necesario actualizar
+    const shouldUpdate =
+      !existingLeagues.length ||
+      !lastUpdate ||
+      now.diff(lastUpdate, "day") >= 1; // cada 1 día
 
-      if (lastUpdated && lastUpdated > eightDaysAgo) {
-        return res.json({
-          status: "success",
-          leagues: existingLeagues,
-        });
-      }
+    if (!shouldUpdate && existingLeagues.length > 0) {
+      return res.json({
+        status: "success",
+        updated: false,
+        leagues: existingLeagues,
+      });
     }
 
+    // 3️⃣ Consultar API-Football
     const response = await axios.get(`${API_URL}/leagues`, {
       headers: { "x-apisports-key": API_KEY },
       params: { team: teamId, season },
     });
 
-    const leagues = response.data.response;
+    const leagues = response.data.response || [];
 
-    if (!leagues || leagues.length === 0) {
+    if (!leagues.length) {
       return res.status(404).json({
         status: "error",
         message: "No leagues found for this team and season",
       });
     }
 
-    await TeamLeague.deleteMany({
-      "team.id": teamId,
-      season: season,
-    });
-
     const savedLeagues = [];
 
     for (const item of leagues) {
       const data = {
-        team: {
-          id: teamId,
-        },
+        team: { id: teamId },
         league: {
           id: item.league.id,
           name: item.league.name,
@@ -101,20 +106,35 @@ const leaguesByTeam = async (req, res) => {
           leagueType: item.league.type,
         },
         season,
+        lastUpdate: new Date(),
       };
 
-      const saved = await TeamLeague.create(data);
-      savedLeagues.push(saved);
+      const updated = await TeamLeague.findOneAndUpdate(
+        {
+          "team.id": teamId,
+          season,
+          "league.id": item.league.id,
+        },
+        { $set: data },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+
+      savedLeagues.push(updated);
+
+      // pequeña espera entre iteraciones (precaución ante rate limit)
+      await new Promise((r) => setTimeout(r, 200));
     }
 
     return res.json({
       status: "success",
+      updated: true,
       leagues: savedLeagues,
     });
   } catch (error) {
-    return res.json({
+    console.error("❌ leaguesByTeam error:", error.message);
+    return res.status(500).json({
       status: "error",
-      message: "An error was found",
+      message: "Error while fetching leagues. Try again later.",
     });
   }
 };
@@ -125,58 +145,70 @@ const leagueById = async (req, res) => {
   if (isNaN(id) || !id) {
     return res
       .status(400)
-      .json({ status: "error", message: "Invalid id or season" });
+      .json({ status: "error", message: "Invalid league id" });
   }
 
   try {
-    const existingLeague = await League.findOne({
-      "league.id": id
-    });
+    // 1️⃣ Buscar liga en la BD
+    const existingLeague = await League.findOne({ "league.id": id });
 
-    if (existingLeague) {
-      const now = new Date();
-      const eightDaysAgo = new Date(now.getTime() - 8 * 24 * 60 * 60 * 1000);
+    const now = dayjs();
+    const lastUpdated = existingLeague?.lastUpdate
+      ? dayjs(existingLeague.lastUpdate)
+      : null;
 
-      const lastUpdated = existingLeague.lastUpdate;
+    // 2️⃣ Definir si se debe actualizar (cada 24 horas)
+    const shouldUpdate =
+      !existingLeague || !lastUpdated || now.diff(lastUpdated, "hour") >= 24;
 
-      if (lastUpdated > eightDaysAgo) {
-        return res.json({
-          status: "success",
-          league: existingLeague,
-        });
-      }
+    if (!shouldUpdate && existingLeague) {
+      return res.json({
+        status: "success",
+        updated: false,
+        league: existingLeague,
+      });
     }
 
+    console.log(`🔁 Actualizando datos de la liga ${id}...`);
+
+    // 3️⃣ Consultar API-Football
     const response = await axios.get(`${API_URL}/leagues`, {
       headers: { "x-apisports-key": API_KEY },
       params: { id },
     });
 
-    const {league, country} = response.data.response[0];
-
-    if (!response.data.response[0]) {
+    const result = response.data?.response?.[0];
+    if (!result) {
       return res.status(404).json({
         status: "error",
         message: "No league found",
       });
     }
 
+    const { league, country } = result;
+
     const objectLeague = {
       league,
-      country
-    }
+      country,
+      lastUpdate: new Date(),
+    };
 
-    const newLeague = new League(objectLeague)
-    await newLeague.save()
+    // 4️⃣ Guardar o actualizar en DB
+    await League.findOneAndUpdate({ "league.id": id }, objectLeague, {
+      upsert: true,
+      new: true,
+    });
 
     return res.json({
       status: "success",
+      updated: true,
       league: objectLeague,
     });
   } catch (error) {
+    console.error("❌ leagueById error:", error.message);
     return res.json({
       status: "error",
-      message: "An error was found",
+      message: "Error fetching league data",
     });
   }
 };
@@ -185,5 +217,5 @@ module.exports = {
   leagues,
   leaguesFromCountry,
   leaguesByTeam,
-  leagueById
+  leagueById,
 };

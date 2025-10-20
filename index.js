@@ -19,6 +19,8 @@ const predictionsRoute = require("./routes/predictions.js");
 const predictionOddsRoute = require("./routes/predictionOdds.js");
 const betRoute = require("./routes/bet.js");
 const syntheticMatchRoute = require("./routes/syntheticMatch.js");
+const teamSummaryRoute = require("./routes/teamSummary.js");
+const scorebatRoute = require("./routes/scorebat");
 const updateFixtures = require("./cron/downloadFixtures.js");
 const startNewsCleanup = require("./cron/newsCleanup.js");
 const startNotificationFixtures = require("./cron/notifyFixtures.js");
@@ -52,6 +54,8 @@ app.use("/api/predictions", predictionsRoute);
 app.use("/api/predictionOdds", predictionOddsRoute);
 app.use("/api/bet", betRoute);
 app.use("/api/syntheticMatch", syntheticMatchRoute);
+app.use("/api/teamSummary", teamSummaryRoute);
+app.use("/api/scorebat", scorebatRoute);
 
 const startServer = async () => {
   try {

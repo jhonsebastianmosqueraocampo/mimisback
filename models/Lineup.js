@@ -6,6 +6,7 @@ const PlayerSchema = new Schema({
   number: Number,
   pos: String,
   grid: String,
+  photo: { type: String, default: "" },
 });
 
 const TeamLineupSchema = new Schema({

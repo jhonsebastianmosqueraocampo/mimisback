@@ -1,12 +1,14 @@
 const PlayerCareer = require("../models/PlayerCareer");
 const axios = require("axios");
+const { getCurrentSeason } = require("../helper/getCurrentSeason.js");
 require("dotenv").config();
 
 const API_KEY = process.env.API_FOOTBALL_KEY;
 const API_URL = process.env.API_URL;
 
 const getPlayerCareer = async (req, res) => {
-  const { playerId, season } = req.params;
+  const { playerId } = req.params;
+  let { season } = req.params;
 
   if (!playerId || isNaN(playerId)) {
     return res
@@ -14,27 +16,49 @@ const getPlayerCareer = async (req, res) => {
       .json({ status: "error", message: "Invalid playerId" });
   }
   if (!season || isNaN(season)) {
-    return res.status(400).json({ status: "error", message: "Invalid season" });
+    return res
+      .status(400)
+      .json({ status: "error", message: "Invalid season" });
   }
+
+  if (season === 0) {
+    season = await getCurrentSeason({ playerId: playerId });
+  }
+
   try {
-    let career = await PlayerCareer.findOne({ playerId, season });
+    let career = await PlayerCareer.findOne({ playerId, season }).lean();
+    const now = new Date();
+
+    // --- 1️⃣ Verificar si existe y si aún está vigente (menos de 24h desde la última actualización) ---
     if (career) {
-      return res.json({
-        status: "success",
-        career,
-      });
+      const lastUpdated = new Date(career.updatedAt || 0);
+      const diffHours = (now - lastUpdated) / (1000 * 60 * 60);
+
+      if (diffHours < 24) {
+        return res.json({
+          status: "success",
+          updated: false,
+          career,
+        });
+      }
     }
 
+    // --- 2️⃣ Consultar API si está desactualizado ---
     const { data } = await axios.get(`${API_URL}/players`, {
       params: { id: playerId, season },
       headers: { "x-apisports-key": API_KEY },
     });
 
     if (!data.response || data.response.length === 0) {
-      return res.status(404).json({ message: "Jugador no encontrado" });
+      return res.status(404).json({
+        status: "error",
+        message: "Jugador no encontrado",
+      });
     }
 
     const playerData = data.response[0];
+
+    // --- 3️⃣ Mapear trayectoria ---
     const mappedHistory = playerData.statistics.map((stat) => ({
       league: {
         id: stat.league.id,
@@ -52,7 +76,8 @@ const getPlayerCareer = async (req, res) => {
       cards: stat.cards,
     }));
 
-    career = await PlayerCareer.findOneAndUpdate(
+    // --- 4️⃣ Guardar o actualizar en DB ---
+    const updatedCareer = await PlayerCareer.findOneAndUpdate(
       { playerId, season },
       {
         playerId,
@@ -63,14 +88,16 @@ const getPlayerCareer = async (req, res) => {
         updatedAt: new Date(),
         history: mappedHistory,
       },
-      { upsert: true, new: true }
+      { upsert: true, new: true, setDefaultsOnInsert: true }
     );
 
     return res.json({
       status: "success",
-      career,
+      updated: true,
+      career: updatedCareer,
     });
   } catch (error) {
+    console.error("❌ Error en getPlayerCareer:", error.message);
     res.json({
       status: "error",
       message: "Error obteniendo trayectoria del jugador",

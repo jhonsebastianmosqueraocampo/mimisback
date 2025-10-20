@@ -1,16 +1,19 @@
-// controllers/leagueStatsController.js
 const axios = require("axios");
 const LeagueStats = require("../models/leagueStats");
+const LiveMatch = require("../models/LiveMatch");
+const Fixture = require("../models/fixture");
 require("dotenv").config();
 
 const API_KEY = process.env.API_FOOTBALL_KEY;
 const BASE_URL = process.env.API_URL;
 const headers = { "x-apisports-key": API_KEY };
 
+const LIVE_SHORT = ["1H", "HT", "2H", "ET", "BT", "P", "INT", "LIVE"];
 const nz = (v) => (isNaN(v) || v == null ? 0 : Number(v));
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * Fetch paginado de /players (API-Football).
+ * Fetch paginado de /players (secuencial)
  */
 async function fetchAllPlayers(leagueId, season) {
   let page = 1;
@@ -26,16 +29,15 @@ async function fetchAllPlayers(leagueId, season) {
     all.push(...(data.response || []));
     totalPages = data?.paging?.total || page;
     page++;
+
+    await sleep(300); // evita rate limit
   }
 
   return all;
 }
 
 /**
- * Aggregation:
- * - suma contadores por jugador
- * - elige teamId/teamName según la estadística con MÁS minutos
- * - toma el rating directamente del statistics (st.games.rating) correspondiente a ese bloque (si existe)
+ * Aggregation de métricas por jugador
  */
 function aggregatePlayers(rawPlayers) {
   const map = new Map();
@@ -51,17 +53,12 @@ function aggregatePlayers(rawPlayers) {
         photo: player.photo || "",
         teamId: null,
         teamName: "",
-        // minutos totales en la temporada (suma)
         minutes: 0,
-        // minutos del bloque elegido (para seleccionar team y rating)
         _teamMinutes: 0,
-
-        // métricas acumuladas
         goals: 0,
         assists: 0,
         yellow: 0,
         red: 0,
-
         shotsTotal: 0,
         shotsOn: 0,
         passesTotal: 0,
@@ -72,8 +69,6 @@ function aggregatePlayers(rawPlayers) {
         interceptions: 0,
         foulsDrawn: 0,
         foulsCommitted: 0,
-
-        // rating tomado directamente del statistics elegido
         rating: 0,
       };
       map.set(player.id, acc);
@@ -81,26 +76,16 @@ function aggregatePlayers(rawPlayers) {
 
     for (const st of statistics) {
       const minutes = nz(st?.games?.minutes);
-
-      // actualizar minutos totales
       acc.minutes += minutes;
 
-      // si este bloque tiene más minutos que el bloque que teníamos, lo elegimos como "principal"
       if (minutes > acc._teamMinutes) {
         acc._teamMinutes = minutes;
         acc.teamId = st?.team?.id ?? acc.teamId;
         acc.teamName = st?.team?.name ?? acc.teamName;
-
-        // tomar rating directo de la API si está presente (viene como string)
-        if (st?.games?.rating != null) {
-          const r = Number(st.games.rating);
-          acc.rating = isNaN(r) ? acc.rating : r;
-        } else {
-          // si no hay rating en este bloque, dejamos el rating previo (o 0)
-        }
+        const r = Number(st?.games?.rating);
+        if (!isNaN(r)) acc.rating = r;
       }
 
-      // acumular métricas
       acc.shotsTotal += nz(st?.shots?.total);
       acc.shotsOn += nz(st?.shots?.on);
       acc.passesTotal += nz(st?.passes?.total);
@@ -118,39 +103,11 @@ function aggregatePlayers(rawPlayers) {
     }
   }
 
-  // retornamos array listo (rating ya es numérico tomado del bloque con más minutos)
-  return Array.from(map.values()).map((p) => ({
-    playerId: p.playerId,
-    name: p.name,
-    photo: p.photo,
-    teamId: p.teamId,
-    teamName: p.teamName,
-    minutes: p.minutes,
-    rating: Number(p.rating) || 0,
-
-    goals: p.goals,
-    assists: p.assists,
-    yellow: p.yellow,
-    red: p.red,
-
-    shotsTotal: p.shotsTotal,
-    shotsOn: p.shotsOn,
-    passesTotal: p.passesTotal,
-    keyPasses: p.keyPasses,
-
-    dribblesAttempts: p.dribblesAttempts,
-    dribblesSuccess: p.dribblesSuccess,
-
-    tackles: p.tackles,
-    interceptions: p.interceptions,
-
-    foulsDrawn: p.foulsDrawn,
-    foulsCommitted: p.foulsCommitted,
-  }));
+  return Array.from(map.values());
 }
 
 /**
- * Devuelve top N cumpliendo el esquema (sin campos extras)
+ * Top N filtrado
  */
 function topN(players, key, n = 10) {
   return players
@@ -169,58 +126,94 @@ function topN(players, key, n = 10) {
 }
 
 /**
- * Fetch de listas "oficiales" (top scorers, assists, yellow, red)
- * Mapeo explícito para evitar nombres dinámicos confusos.
+ * Fetch de tops oficiales (secuencial)
  */
 async function fetchOfficialTopLists(leagueId, season) {
-  const [scResp, asResp, ycResp, rcResp] = await Promise.all([
-    axios.get(`${BASE_URL}/players/topscorers`, { headers, params: { league: leagueId, season } }),
-    axios.get(`${BASE_URL}/players/topassists`, { headers, params: { league: leagueId, season } }),
-    axios.get(`${BASE_URL}/players/topyellowcards`, { headers, params: { league: leagueId, season } }),
-    axios.get(`${BASE_URL}/players/topredcards`, { headers, params: { league: leagueId, season } }),
-  ]);
+  const endpoints = [
+    { key: "topScorers", url: "players/topscorers", metric: "goals", path: (st) => nz(st?.goals?.total) },
+    { key: "topAssists", url: "players/topassists", metric: "assists", path: (st) => nz(st?.goals?.assists) },
+    { key: "topYellowCards", url: "players/topyellowcards", metric: "yellow", path: (st) => nz(st?.cards?.yellow) },
+    { key: "topRedCards", url: "players/topredcards", metric: "red", path: (st) => nz(st?.cards?.red) },
+  ];
 
-  const mapItem = (item, metricGetter) => {
-    const p = item.player || {};
-    const st = item.statistics?.[0] || {};
-    const team = st.team || {};
-    return {
-      playerId: p.id,
-      name: p.name,
-      photo: p.photo,
-      teamId: team.id ?? null,
-      teamName: team.name ?? "",
-      ...metricGetter(st),
-    };
-  };
+  const result = {};
 
-  return {
-    topScorers: (scResp.data?.response || []).slice(0, 10).map(item => mapItem(item, (st)=>({ goals: nz(st?.goals?.total) }))),
-    topAssists: (asResp.data?.response || []).slice(0, 10).map(item => mapItem(item, (st)=>({ assists: nz(st?.goals?.assists) }))),
-    topYellowCards: (ycResp.data?.response || []).slice(0, 10).map(item => mapItem(item, (st)=>({ yellow: nz(st?.cards?.yellow) }))),
-    topRedCards: (rcResp.data?.response || []).slice(0, 10).map(item => mapItem(item, (st)=>({ red: nz(st?.cards?.red) }))),
-  };
+  for (const ep of endpoints) {
+    try {
+      const { data } = await axios.get(`${BASE_URL}/${ep.url}`, {
+        headers,
+        params: { league: leagueId, season },
+      });
+      const mapItem = (item) => {
+        const p = item.player || {};
+        const st = item.statistics?.[0] || {};
+        const team = st.team || {};
+        return {
+          playerId: p.id,
+          name: p.name,
+          photo: p.photo,
+          teamId: team.id ?? null,
+          teamName: team.name ?? "",
+          [ep.metric]: ep.path(st),
+        };
+      };
+      result[ep.key] = (data.response || []).slice(0, 10).map(mapItem);
+    } catch (err) {
+      console.warn(`⚠️ Error obteniendo ${ep.url}:`, err.message);
+      result[ep.key] = [];
+    }
+    await sleep(500); // pequeña pausa entre peticiones
+  }
+
+  return result;
 }
 
 /**
- * Orquestador principal
+ * 🔥 Orquestador principal con actualización dinámica (sin Promise.all)
  */
 async function getLeagueStats(leagueId, season) {
-  const TWO_HOURS = 2 * 60 * 60 * 1000;
-  const now = Date.now();
-
   let doc = await LeagueStats.findOne({ leagueId, season });
-  if (doc && now - doc.lastUpdated.getTime() < TWO_HOURS) {
-    return doc;
-  }
+  const now = new Date();
 
-  const [playersRaw, official] = await Promise.all([
-    fetchAllPlayers(leagueId, season),
-    fetchOfficialTopLists(leagueId, season),
-  ]);
+  // --- 1️⃣ Detectar actividad (en vivo o del día) ---
+  const startOfDay = new Date(now);
+  startOfDay.setHours(0, 0, 0, 0);
+  const endOfDay = new Date(now);
+  endOfDay.setHours(23, 59, 59, 999);
+
+  const liveMatches = await LiveMatch.find({
+    "league.id": leagueId,
+    "status.short": { $in: LIVE_SHORT },
+  }).lean();
+  const hasLive = liveMatches.length > 0;
+
+  const fixturesToday = await Fixture.find({
+    "league.id": leagueId,
+    date: { $gte: startOfDay, $lte: endOfDay },
+  }).lean();
+  const hasToday = fixturesToday.length > 0;
+
+  // --- 2️⃣ Frecuencia de actualización dinámica ---
+  let maxAgeMinutes = 720; // 12 h
+  if (hasLive) maxAgeMinutes = 10;
+  else if (hasToday) maxAgeMinutes = 120;
+
+  const lastUpdated = doc ? new Date(doc.lastUpdated) : null;
+  const diffMinutes = lastUpdated ? (now - lastUpdated) / (1000 * 60) : Infinity;
+  const shouldUpdate = !doc || diffMinutes >= maxAgeMinutes;
+
+  if (!shouldUpdate) return doc;
+
+  console.log(`🔁 Actualizando estadísticas de liga ${leagueId} (${season}) cada ${maxAgeMinutes} min...`);
+
+  // --- 3️⃣ Fetch de datos (secuencial) ---
+  const playersRaw = await fetchAllPlayers(leagueId, season);
+  await sleep(500);
+  const official = await fetchOfficialTopLists(leagueId, season);
 
   const aggregated = aggregatePlayers(playersRaw);
 
+  // --- 4️⃣ Armar payload completo ---
   const payload = {
     leagueId,
     season,
@@ -236,7 +229,7 @@ async function getLeagueStats(leagueId, season) {
     topInterceptions: topN(aggregated, "interceptions"),
     topFoulsDrawn: topN(aggregated, "foulsDrawn"),
     topFoulsCommitted: topN(aggregated, "foulsCommitted"),
-    lastUpdated: new Date(),
+    lastUpdated: now,
   };
 
   doc = await LeagueStats.findOneAndUpdate(

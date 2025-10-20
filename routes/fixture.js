@@ -15,5 +15,6 @@ router.get("/preMatchStats/:fixtureId", middleware.auth, fixtureController.getPr
 router.get("/fixtureLineup/:fixtureId", middleware.auth, fixtureController.getFixtureLineups);
 router.get("/liveMatch/:fixtureId", middleware.auth, fixtureController.getLiveMatch);
 router.get("/getMatchesDay", middleware.auth, fixtureController.getMatchesDay);
+router.get("/isLiveMatch/:fixtureId", middleware.auth, fixtureController.isLiveMatch);
 
 module.exports = router;

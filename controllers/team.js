@@ -2,6 +2,7 @@ const Team = require("../models/team");
 const TeamPlayerStatByLeague = require("../models/TeamPlayerStatByLeague");
 const Squad = require("../models/squad");
 const axios = require("axios");
+const { getCurrentSeason } = require("../helper/getCurrentSeason.js");
 require("dotenv").config();
 
 const { getLeaguesByTeam } = require("../helper/getLeaguesByTeam");
@@ -14,9 +15,13 @@ const teams = async (req, res) => {
   if (isNaN(leagueId) || !leagueId) {
     return res.json({ status: "error", message: "Invalid leagueId" });
   }
-  const season = parseInt(req.params.season, 10);
+  let season = parseInt(req.params.season, 10);
   if (isNaN(season) || !season) {
     return res.json({ status: "error", message: "Invalid season" });
+  }
+
+  if (season === 0) {
+    season = await getCurrentSeason({ leagueId: leagueId });
   }
 
   try {
@@ -80,17 +85,14 @@ const getTeam = async (req, res) => {
       return res.json({ status: "success", team });
     }
 
-    const { data } = await axios.get(
-      `https://v3.football.api-sports.io/teams`,
-      {
-        headers: {
-          "x-apisports-key": API_FOOTBALL_KEY,
-        },
-        params: {
-          id: teamId,
-        },
-      }
-    );
+    const { data } = await axios.get(`${API_URL}/teams`, {
+      headers: {
+        "x-apisports-key": API_KEY,
+      },
+      params: {
+        id: teamId,
+      },
+    });
 
     const responseTeam = data.response?.[0];
 
@@ -117,10 +119,14 @@ const getTeam = async (req, res) => {
 
 const getTeamPlayerStats = async (req, res) => {
   const teamId = parseInt(req.params.teamId, 10);
-  const season = parseInt(req.params.season, 10);
+  let season = parseInt(req.params.season, 10);
 
   if (!teamId || isNaN(teamId) || !season || isNaN(season)) {
     return res.json({ status: "error", message: "Invalid parameters" });
+  }
+
+  if (season === 0) {
+    season = await getCurrentSeason({ teamId: teamId });
   }
 
   try {
@@ -133,7 +139,7 @@ const getTeamPlayerStats = async (req, res) => {
     const now = new Date();
     const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
 
-    const allStats = []
+    const allStats = [];
 
     for (const leagueObj of leagues) {
       const leagueId = leagueObj.league.id;
@@ -222,12 +228,16 @@ const getTeamPlayerStats = async (req, res) => {
 const getTeamPlayerStatsByLeague = async (req, res) => {
   const teamId = parseInt(req.params.teamId, 10);
   const leagueId = parseInt(req.params.leagueId, 10);
-  const season = parseInt(req.params.season, 10);
+  let season = parseInt(req.params.season, 10);
 
   if (!teamId || !leagueId || !season) {
     return res
       .status(400)
       .json({ status: "error", message: "Invalid parameters" });
+  }
+
+  if (season === 0) {
+    season = await getCurrentSeason({ leagueId: leagueId });
   }
 
   try {
@@ -291,24 +301,28 @@ const getSquad = async (req, res) => {
     const existingSquad = await Squad.findOne({ teamId });
 
     if (existingSquad) {
-      const daysSinceUpdate = (Date.now() - existingSquad.lastUpdated) / (1000 * 60 * 60 * 24);
+      const daysSinceUpdate =
+        (Date.now() - existingSquad.lastUpdated) / (1000 * 60 * 60 * 24);
 
       if (daysSinceUpdate < 10) {
         return res.json({
           status: "success",
-          squad: existingSquad
+          squad: existingSquad,
         });
       }
     }
 
-    const { data } = await axios.get(`${API_URL}/players/squads?team=${teamId}`, {
-      headers: { "x-apisports-key": API_KEY }
-    });
+    const { data } = await axios.get(
+      `${API_URL}/players/squads?team=${teamId}`,
+      {
+        headers: { "x-apisports-key": API_KEY },
+      }
+    );
 
     if (!data.response || data.response.length === 0) {
       return res.json({
         status: "error",
-        message: "No squad found for this team."
+        message: "No squad found for this team.",
       });
     }
 
@@ -317,32 +331,30 @@ const getSquad = async (req, res) => {
       teamId: squadData.team.id,
       teamName: squadData.team.name,
       teamLogo: squadData.team.logo,
-      players: squadData.players.map(p => ({
+      players: squadData.players.map((p) => ({
         id: p.id,
         name: p.name,
         age: p.age,
         number: p.number,
         position: p.position,
-        photo: p.photo
+        photo: p.photo,
       })),
-      lastUpdated: Date.now()
+      lastUpdated: Date.now(),
     };
 
-    const updatedSquad = await Squad.findOneAndUpdate(
-      { teamId },
-      newSquad,
-      { upsert: true, new: true }
-    );
+    const updatedSquad = await Squad.findOneAndUpdate({ teamId }, newSquad, {
+      upsert: true,
+      new: true,
+    });
 
     return res.json({
       status: "success",
-      squad: updatedSquad
+      squad: updatedSquad,
     });
-
   } catch (error) {
     return res.json({
       status: "error",
-      message: "An error occurred. Please try again."
+      message: "An error occurred. Please try again.",
     });
   }
 };
@@ -352,5 +364,5 @@ module.exports = {
   getTeam,
   getTeamPlayerStats,
   getTeamPlayerStatsByLeague,
-  getSquad
+  getSquad,
 };

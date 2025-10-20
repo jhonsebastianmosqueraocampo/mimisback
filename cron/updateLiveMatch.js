@@ -28,6 +28,7 @@ async function runUpdate() {
     const now = new Date();
     let updated = 0;
     let apiCalls = 0;
+    console.log(fixturesToday.length)
 
     for (const fixture of fixturesToday) {
       const fixtureDate = new Date(fixture.date);
@@ -42,7 +43,6 @@ async function runUpdate() {
 
       // --- 1. Próximos ---
       if (fixtureDate > now) continue;
-
       // --- 2. Ya empezó ---
       const liveMatch = await LiveMatch.findOne({
         fixtureId: fixture.fixtureId,
@@ -95,6 +95,25 @@ async function fetchAndUpsertLiveMatch(fixtureId) {
 
     if (!fixtureData.response?.length) return { ok: false, apiCalls };
     const apiFixture = fixtureData.response[0];
+
+    await Fixture.findOneAndUpdate(
+      { fixtureId: apiFixture.fixture.id },
+      {
+        $set: {
+          fixtureId: apiFixture.fixture.id,
+          date: apiFixture.fixture.date,
+          timestamp: apiFixture.fixture.timestamp,
+          referee: apiFixture.fixture.referee,
+          league: apiFixture.league,
+          teams: apiFixture.teams,
+          goals: apiFixture.goals,
+          status: apiFixture.fixture.status,
+          venue: apiFixture.fixture.venue,
+          lastUpdated: new Date(),
+        },
+      },
+      { upsert: true, new: true }
+    );
 
     // --- Traemos datos dinámicos ---
     const { data: eventsData } = await axios.get(`${API_URL}/fixtures/events`, {

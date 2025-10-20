@@ -131,61 +131,60 @@ const getFavorites = async (req, res) => {
 const getFavoritesStats = async (req, res) => {
   const { id } = req.user;
   const SEASON = new Date().getFullYear();
-  const MAX_AGE_HOURS = 24;
 
   try {
-    // 1️⃣ Buscar usuario
     const user = await User.findById(id).lean();
-    if (!user) {
-      return res.json({ status: "error", message: "Usuario no encontrado" });
-    }
+    if (!user) return res.json({ status: "error", message: "Usuario no encontrado" });
 
-    // 2️⃣ Buscar favoritos
     const favorites = await Favorite.findOne({ user: id }).lean();
     if (!favorites || !favorites.equipos?.length) {
-      return res.json({
-        status: "error",
-        message: "No se encontraron equipos favoritos",
-      });
+      return res.json({ status: "error", message: "No se encontraron equipos favoritos" });
     }
 
     const results = [];
 
-    // 3️⃣ Iterar sobre nombres de equipos favoritos
     for (const teamName of favorites.equipos) {
       let team = await Team.findOne({ name: teamName });
 
-      // 4️⃣ Si no está en DB, buscarlo en la API y guardarlo
+      // 🟢 Buscar en la API si no existe
       if (!team) {
-        console.log(`📡 Buscando "${teamName}" en la API...`);
         const searchRes = await axios.get(`${API_URL}/teams`, {
           headers: { "x-apisports-key": API_KEY },
           params: { search: teamName },
         });
 
         const found = searchRes.data.response?.[0];
-        if (!found) {
-          console.log(`⚠️ No se encontró el equipo "${teamName}"`);
-          continue;
-        }
+        if (!found) continue;
 
-        // Guardar en DB
         team = await Team.create({
           teamId: found.team.id,
           name: found.team.name,
           logo: found.team.logo,
           country: found.team.country,
-          leagueId: found.team.league || null, // opcional si la API lo da
         });
-
-        console.log(
-          `✅ Guardado nuevo equipo en DB: ${team.name} (${team.teamId})`
-        );
       }
 
       const teamId = team.teamId;
 
-      // 5️⃣ Buscar estadísticas guardadas en DB
+      // 🕒 Buscar último fixture para determinar actividad
+      const recentFixture = await Fixture.findOne({
+        $or: [{ "teams.home.id": teamId }, { "teams.away.id": teamId }],
+      }).sort({ "fixture.date": -1 });
+
+      const hoursSinceLastMatch = recentFixture
+        ? (Date.now() - new Date(recentFixture.fixture.date)) / 36e5
+        : 9999;
+
+      // 💡 Definir límite dinámico según actividad
+      const getRefreshLimitHours = (hours) => {
+        if (hours < 6) return 2;   // partido en curso o reciente
+        if (hours < 72) return 12; // jugó hace 1-3 días
+        if (hours < 168) return 72; // jugó hace menos de 1 semana
+        return 168; // más de 7 días, fuera de temporada
+      };
+
+      const MAX_AGE_HOURS = getRefreshLimitHours(hoursSinceLastMatch);
+
       let teamStats = await TeamPlayerStatByLeague.findOne({
         teamId,
         season: SEASON,
@@ -194,15 +193,10 @@ const getFavoritesStats = async (req, res) => {
       const needsUpdate =
         !teamStats ||
         !teamStats.lastUpdate ||
-        (Date.now() - new Date(teamStats.lastUpdate).getTime()) /
-          (1000 * 60 * 60) >
-          MAX_AGE_HOURS;
+        (Date.now() - new Date(teamStats.lastUpdate).getTime()) / 36e5 > MAX_AGE_HOURS;
 
-      // 6️⃣ Si no hay datos o están desactualizados, pedirlos a la API
       if (needsUpdate) {
-        console.log(
-          `⏳ Actualizando estadísticas de jugadores del equipo ${team.name} (${teamId})`
-        );
+        console.log(`🔄 Actualizando estadísticas del equipo ${team.name} (${teamId})`);
 
         const response = await axios.get(`${API_URL}/players`, {
           headers: { "x-apisports-key": API_KEY },
@@ -210,13 +204,8 @@ const getFavoritesStats = async (req, res) => {
         });
 
         const apiData = response.data.response;
+        if (!apiData || apiData.length === 0) continue;
 
-        if (!apiData || apiData.length === 0) {
-          console.log(`⚠️ No se encontraron estadísticas para ${team.name}`);
-          continue;
-        }
-
-        // Agrupar jugadores por liga
         const leagues = {};
         apiData.forEach((item) => {
           const leagueId = item.statistics[0].league.id;
@@ -234,10 +223,9 @@ const getFavoritesStats = async (req, res) => {
           });
         });
 
-        // Guardar o actualizar en DB
         for (const leagueId in leagues) {
           const data = leagues[leagueId];
-          teamStats = await TeamPlayerStatByLeague.findOneAndUpdate(
+          await TeamPlayerStatByLeague.findOneAndUpdate(
             { teamId, leagueId: data.leagueId, season: SEASON },
             {
               teamId,
@@ -251,17 +239,17 @@ const getFavoritesStats = async (req, res) => {
         }
       }
 
-      // 7️⃣ Agregar al resultado
       results.push({
         teamId,
         teamName: team.name,
         logo: team.logo,
         country: team.country,
         players: teamStats?.players || [],
+        lastUpdate: teamStats?.lastUpdate || null,
+        refreshRate: `${MAX_AGE_HOURS}h`,
       });
     }
 
-    // 8️⃣ Responder al cliente
     return res.json({
       status: "success",
       totalTeams: results.length,
@@ -275,6 +263,7 @@ const getFavoritesStats = async (req, res) => {
     });
   }
 };
+
 
 module.exports = {
   saveFavorites,

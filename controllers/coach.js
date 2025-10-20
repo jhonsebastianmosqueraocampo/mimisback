@@ -1,6 +1,7 @@
 const axios = require("axios");
 const Coach = require("../models/coach");
 const Team = require("../models/team");
+const { getCurrentSeason } = require("../helper/getCurrentSeason");
 require("dotenv").config();
 
 const API_URL = process.env.API_URL;
@@ -14,7 +15,11 @@ const getCoachesByLeague = async (req, res) => {
 
   try {
     const parsedLeagueId = parseInt(leagueId, 10);
-    const parsedSeason = parseInt(season, 10);
+    let parsedSeason = parseInt(season, 10);
+
+    if (parsedSeason === 0) {
+      parsedSeason = await getCurrentSeason({ leagueId: parsedLeagueId });
+    }
 
     const existingCoaches = await Coach.aggregate([
       {
@@ -211,7 +216,7 @@ const getCoachesByLeague = async (req, res) => {
 };
 
 const getCoachByTeam = async (req, res) => {
-  const CACHE_DAYS_LIMIT = 10;
+  const CACHE_DAYS_LIMIT = 1;
   const teamId = parseInt(req.params.teamId, 10);
 
   if (isNaN(teamId) || !teamId) {
@@ -380,7 +385,7 @@ const getCoachInfo = async (req, res) => {
       now - new Date(seasonData.lastUpdated) >= 2 * 60 * 60 * 1000;
 
     if (seasonData && !needUpdate) {
-      return res.json({ status:"success", coach: coachDoc });
+      return res.json({ status: "success", coach: coachDoc });
     }
 
     const coachRes = await axios.get(`${API_URL}/coachs`, {
