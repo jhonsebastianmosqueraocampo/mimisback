@@ -2,23 +2,38 @@ const User = require("../models/user");
 const validator = require("validator");
 const bcrypt = require("bcrypt");
 const jwt = require("../services/jwt");
+const { sendInviteSyntheticEmail } = require("../services/mailer");
 
 const getUser = async (req, res) => {
   try {
-      const userId = req.user.id;
-      const user = await User.findById(userId).select("-password").lean();
-      return res.json({
-        status: 'success',
-        user
-      })
-  } catch (error) {
-    console.log(error)
+    const userId = req.user.id;
+    const user = await User.findById(userId).select("-password").lean();
     return res.json({
-      status: 'error',
-      message: 'An error was found. Please, try again'
-    })
+      status: "success",
+      user,
+    });
+  } catch (error) {
+    return res.json({
+      status: "error",
+      message: "An error was found. Please, try again",
+    });
   }
-}
+};
+
+const getUsers = async (req, res) => {
+  try {
+    const users = await User.find().select("-password").lean();
+    return res.json({
+      status: "success",
+      users,
+    });
+  } catch (error) {
+    return res.json({
+      status: "error",
+      message: "An error was found. Please, try again",
+    });
+  }
+};
 
 const register = async (req, res) => {
   try {
@@ -112,11 +127,11 @@ const login = async (req, res) => {
 
     const user = await User.findOne({ email: req.body.email });
 
-    if(user.authProvider === 'google'){
+    if (user.authProvider === "google") {
       return res.json({
-        status: 'error',
-        message: 'An error was found. Please, try again'
-      })
+        status: "error",
+        message: "An error was found. Please, try again",
+      });
     }
 
     if (!user) {
@@ -127,7 +142,7 @@ const login = async (req, res) => {
     } else {
       const validatePassword = await bcrypt.compare(
         req.body.password,
-        user.password
+        user.password,
       );
       if (!validatePassword) {
         return res.status(400).json({
@@ -266,17 +281,19 @@ const getUserFromRefreshToken = async (req, res) => {
 const updateNotificationsToken = async (req, res) => {
   const { updateNotificationsToken } = req.body;
   try {
-    const userId = req.user.id; 
-    await User.findByIdAndUpdate(userId, { pushToken: updateNotificationsToken });
-    res.json({ status: 'success', message: 'token updated' });
+    const userId = req.user.id;
+    await User.findByIdAndUpdate(userId, {
+      pushToken: updateNotificationsToken,
+    });
+    res.json({ status: "success", message: "token updated" });
   } catch (error) {
-    console.log(error)
+    console.log(error);
     return res.json({
       status: "error",
       message: "An error was found",
     });
   }
-}
+};
 
 const updatePoints = async (req, res) => {
   const { rewardType } = req.body;
@@ -309,7 +326,7 @@ const updatePoints = async (req, res) => {
     const updatedUser = await User.findByIdAndUpdate(
       userId,
       { $inc: { points } },
-      { new: true }
+      { new: true },
     );
 
     if (!updatedUser) {
@@ -340,7 +357,7 @@ const updateNickName = async (req, res) => {
     const updatedUser = await User.findByIdAndUpdate(
       userId,
       { nickName },
-      { new: true }
+      { new: true },
     );
 
     if (!updatedUser) {
@@ -367,7 +384,7 @@ const updatePassword = async (req, res) => {
     const updatedUser = await User.findByIdAndUpdate(
       userId,
       { password: newPassword },
-      { new: true }
+      { new: true },
     );
 
     if (!updatedUser) {
@@ -382,64 +399,248 @@ const updatePassword = async (req, res) => {
 
 const addPoints = async (req, res) => {
   try {
-    const { amount } = req.body;
+    const { amount, xpAmount = 0, action = "Acción manual" } = req.body;
     const userId = req.user.id;
 
+    if (amount <= 0)
+      return res.status(400).json({ message: "Cantidad inválida" });
+
     const user = await User.findById(userId);
-    if (!user) return res.status(404).json({ message: "Usuario no encontrado" });
+    if (!user)
+      return res.status(404).json({ message: "Usuario no encontrado" });
 
-    // sumar puntos y xp
     user.points += amount;
-    user.xp += amount;
 
-    // recalcular nivel
+    if (xpAmount > 0) {
+      user.xp += xpAmount;
+    }
+
+    user.pointsHistory.push({
+      action,
+      points: amount,
+    });
+
     user.calculateLevel();
 
     await user.save();
 
-    res.json({
-      message: "Puntos agregados correctamente",
+    return res.json({
+      status: "success",
       points: user.points,
       xp: user.xp,
       level: user.level,
     });
   } catch (error) {
-    res.status(500).json({ message: "Error agregando puntos", error });
+    return res.status(500).json({
+      status: "error",
+      message: "An error was found. Please, try again!",
+    });
   }
 };
 
 const redeemPoints = async (req, res) => {
   try {
-    const { amount } = req.body;
+    const { amount, action = "Redención tienda" } = req.body;
     const userId = req.user.id;
 
-    const user = await User.findById(userId);
-    if (!user) return res.status(404).json({ message: "Usuario no encontrado" });
+    if (amount <= 0)
+      return res.status(400).json({ message: "Cantidad inválida" });
 
-    if (user.points < amount) {
-      return res.status(400).json({ message: "No tienes suficientes puntos" });
+    const updatedUser = await User.findOneAndUpdate(
+      {
+        _id: userId,
+        points: { $gte: amount },
+      },
+      {
+        $inc: {
+          points: -amount,
+          redeemed: amount,
+        },
+        $push: {
+          pointsHistory: {
+            action,
+            points: -amount,
+            date: new Date(),
+          },
+        },
+      },
+      { new: true },
+    );
+
+    if (!updatedUser) {
+      return res.status(400).json({
+        message: "No tienes suficientes puntos",
+      });
     }
 
-    // restar puntos disponibles
-    user.points -= amount;
-    user.redeemed += amount;
-
-    // recalcular nivel (xp no cambia, solo puntos)
-    user.calculateLevel();
-
-    await user.save();
-
-    res.json({
-      message: "Puntos redimidos correctamente",
-      points: user.points,
-      redeemed: user.redeemed,
-      level: user.level,
+    return res.json({
+      status: "success",
+      points: updatedUser.points,
     });
   } catch (error) {
-    res.status(500).json({ message: "Error redimiendo puntos", error });
+    return res.status(500).json({
+      status: "error",
+      message: "An error was found. Please, try again!",
+    });
   }
 };
 
+const getPoints = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const user = await User.findById(userId);
+    if (!user)
+      return res.status(404).json({ message: "Usuario no encontrado" });
+    return res.json({
+      status: "success",
+      points: user.points,
+    });
+  } catch (error) {
+    return res.json({
+      status: "error",
+      message: "An error was found. Please, try again!",
+    });
+  }
+};
+
+const getLimitAdsPerDay = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const user = await User.findById(userId);
+
+    if (!user)
+      return res.status(404).json({ message: "Usuario no encontrado" });
+
+    const wasReset = user.checkAndResetAdsLimit();
+
+    if (wasReset) await user.save();
+
+    return res.json({
+      status: "success",
+      limit: user.limitAdsPerDay,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      status: "error",
+      message: "An error was found. Please, try again!",
+    });
+  }
+};
+
+const descountLimitAdsPerDayAndAddPoint = async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const user = await User.findById(userId);
+    if (!user)
+      return res
+        .status(404)
+        .json({ status: "error", message: "Usuario no encontrado" });
+
+    user.checkAndResetAdsLimit();
+    await user.save();
+
+    const updatedUser = await User.findOneAndUpdate(
+      {
+        _id: userId,
+        limitAdsPerDay: { $gt: 0 },
+      },
+      {
+        $inc: {
+          limitAdsPerDay: -1,
+          points: 5,
+          xp: 5,
+        },
+        $push: {
+          pointsHistory: {
+            action: "Video recompensado",
+            points: 5,
+            date: new Date(),
+          },
+        },
+      },
+      { new: true },
+    );
+
+    if (!updatedUser) {
+      return res.status(400).json({
+        message: "Has alcanzado el límite diario",
+      });
+    }
+
+    updatedUser.calculateLevel();
+    await updatedUser.save();
+
+    return res.json({
+      status: "success",
+      limit: updatedUser.limitAdsPerDay,
+      points: updatedUser.points,
+      xp: updatedUser.xp,
+      level: updatedUser.level,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      status: "error",
+      message: "An error was found. Please, try again!",
+    });
+  }
+};
+
+const invitationSyntheticMatch = async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const user = await User.findById(userId);
+    if (!user)
+      return res
+        .status(404)
+        .json({ status: "error", message: "Usuario no encontrado" });
+
+    const now = new Date();
+    const eightDaysAgo = new Date();
+    eightDaysAgo.setDate(now.getDate() - 8);
+
+    const recentMatch = user.syntheticMatches?.find(
+      (m) =>
+        ["INVITED", "CONFIRMED", "PLAYED"].includes(m.type) &&
+        m.createdAt >= eightDaysAgo,
+    );
+
+    if (recentMatch) {
+      return res.status(400).json({
+        status: "error",
+        message: "Solo puedes programar un partido contra MIMIS cada 8 días.",
+      });
+    }
+
+    // Registrar nueva invitación
+    user.syntheticMatches.push({
+      type: "INVITED",
+      createdAt: new Date(),
+    });
+
+    await user.save();
+
+    try {
+      await sendInviteSyntheticEmail({ user });
+    } catch (mailError) {
+      return res.json({
+        status: "error",
+        message: "No se ha podido enviar el correo",
+      });
+    }
+
+    return res.json({
+      status: "success",
+      message: "Invitación enviada correctamente ⚽",
+    });
+  } catch (error) {
+    return res.status(500).json({
+      status: "error",
+      message: "An error was found. Please, try again!",
+    });
+  }
+};
 
 module.exports = {
   register,
@@ -453,5 +654,10 @@ module.exports = {
   updatePassword,
   addPoints,
   redeemPoints,
-  getUser
+  getUser,
+  getUsers,
+  getPoints,
+  getLimitAdsPerDay,
+  descountLimitAdsPerDayAndAddPoint,
+  invitationSyntheticMatch,
 };

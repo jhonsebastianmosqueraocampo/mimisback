@@ -1,5 +1,6 @@
 const axios = require("axios");
 const TeamPlayerStatByLeague = require("../models/TeamPlayerStatByLeague");
+const Fixture = require("../models/fixture");
 require("dotenv").config();
 
 const API_KEY = process.env.API_FOOTBALL_KEY;

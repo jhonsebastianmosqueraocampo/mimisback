@@ -15,6 +15,10 @@ router.get("/preMatchStats/:fixtureId", middleware.auth, fixtureController.getPr
 router.get("/fixtureLineup/:fixtureId", middleware.auth, fixtureController.getFixtureLineups);
 router.get("/liveMatch/:fixtureId", middleware.auth, fixtureController.getLiveMatch);
 router.get("/getMatchesDay", middleware.auth, fixtureController.getMatchesDay);
+router.get("/getMatchesTodayFromLeague/:leagueId", middleware.auth, fixtureController.getMatchesTodayFromLeague);
 router.get("/isLiveMatch/:fixtureId", middleware.auth, fixtureController.isLiveMatch);
+router.get("/getMatchesNationalDay", middleware.auth, fixtureController.getMatchesNationalDay);
+router.post("/ratePlayer/:fixtureId/:playerId", middleware.auth, fixtureController.ratePlayer);
+router.get("/player-ratings/:fixtureId", middleware.auth, fixtureController.getPlayerUserRatings);
 
 module.exports = router;

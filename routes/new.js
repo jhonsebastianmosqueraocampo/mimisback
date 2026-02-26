@@ -7,6 +7,7 @@ const middleware = require("../middlewares/auth");
 
 router.get("/listNews/:team", middleware.auth, newController.getNewsForTeam);
 router.get("/rumorNews/:teamId", middleware.auth, newController.getRumorNewsForTeam);
+router.get("/rumorNewsFavoritesGeneral", newController.getRumorNewsFavoritesGeneral);
 router.get("/playerNews/:playerId", middleware.auth, newController.getPlayerNews);
 router.get("/leagueNews/:leagueId", newController.getLeagueNews);
 router.get("/coachNews/:coachId", newController.getCoachNews);

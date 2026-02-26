@@ -5,89 +5,102 @@ const Player = require("../models/player");
 const Coach = require("../models/coach");
 const League = require("../models/league");
 const { getNews } = require("../helper/getNewsFromApi");
+const Favorite = require("../models/favorite");
 require("dotenv").config();
 
 const parser = new Parser();
 
 const countryLangMap = {
-    // América
-    AR: "es", // Argentina
-    BO: "es", // Bolivia
-    BR: "pt", // Brasil
-    CL: "es", // Chile
-    CO: "es", // Colombia
-    CR: "es", // Costa Rica
-    EC: "es", // Ecuador
-    MX: "es", // México
-    PA: "es", // Panamá
-    PE: "es", // Perú
-    PY: "es", // Paraguay
-    UY: "es", // Uruguay
-    VE: "es", // Venezuela
-    US: "en", // Estados Unidos
-    CA: "en", // Canadá (inglés, aunque también se habla francés)
+  // América
+  AR: "es", // Argentina
+  BO: "es", // Bolivia
+  BR: "pt", // Brasil
+  CL: "es", // Chile
+  CO: "es", // Colombia
+  CR: "es", // Costa Rica
+  EC: "es", // Ecuador
+  MX: "es", // México
+  PA: "es", // Panamá
+  PE: "es", // Perú
+  PY: "es", // Paraguay
+  UY: "es", // Uruguay
+  VE: "es", // Venezuela
+  US: "en", // Estados Unidos
+  CA: "en", // Canadá (inglés, aunque también se habla francés)
 
-    // Europa
-    ES: "es", // España
-    GB: "en", // Inglaterra / Reino Unido
-    DE: "de", // Alemania
-    FR: "fr", // Francia
-    IT: "it", // Italia
-    PT: "pt", // Portugal
-    NL: "nl", // Países Bajos
-    BE: "nl", // Bélgica (nl, pero también fr)
-    RU: "ru", // Rusia
-    TR: "tr", // Turquía
-    GR: "el", // Grecia
-    PL: "pl", // Polonia
-    DK: "da", // Dinamarca
-    SE: "sv", // Suecia
-    NO: "no", // Noruega
-    FI: "fi", // Finlandia
-    UA: "uk", // Ucrania
-    CZ: "cs", // República Checa
-    HR: "hr", // Croacia
-    RS: "sr", // Serbia
-    CH: "de", // Suiza (de, fr, it → pongo alemán por defecto)
+  // Europa
+  ES: "es", // España
+  GB: "en", // Inglaterra / Reino Unido
+  DE: "de", // Alemania
+  FR: "fr", // Francia
+  IT: "it", // Italia
+  PT: "pt", // Portugal
+  NL: "nl", // Países Bajos
+  BE: "nl", // Bélgica (nl, pero también fr)
+  RU: "ru", // Rusia
+  TR: "tr", // Turquía
+  GR: "el", // Grecia
+  PL: "pl", // Polonia
+  DK: "da", // Dinamarca
+  SE: "sv", // Suecia
+  NO: "no", // Noruega
+  FI: "fi", // Finlandia
+  UA: "uk", // Ucrania
+  CZ: "cs", // República Checa
+  HR: "hr", // Croacia
+  RS: "sr", // Serbia
+  CH: "de", // Suiza (de, fr, it → pongo alemán por defecto)
 
-    // África
-    MA: "ar", // Marruecos (árabe, también francés)
-    DZ: "ar", // Argelia
-    TN: "ar", // Túnez
-    EG: "ar", // Egipto
-    ZA: "en", // Sudáfrica
-    NG: "en", // Nigeria
-    GH: "en", // Ghana
-    CI: "fr", // Costa de Marfil
+  // África
+  MA: "ar", // Marruecos (árabe, también francés)
+  DZ: "ar", // Argelia
+  TN: "ar", // Túnez
+  EG: "ar", // Egipto
+  ZA: "en", // Sudáfrica
+  NG: "en", // Nigeria
+  GH: "en", // Ghana
+  CI: "fr", // Costa de Marfil
 
-    // Asia
-    JP: "ja", // Japón
-    KR: "ko", // Corea del Sur
-    CN: "zh", // China
-    IN: "hi", // India (aunque también inglés)
-    SA: "ar", // Arabia Saudita
-    QA: "ar", // Qatar
-    AE: "ar", // Emiratos Árabes Unidos
-    IR: "fa", // Irán
-    TH: "th", // Tailandia
-    VN: "vi", // Vietnam
+  // Asia
+  JP: "ja", // Japón
+  KR: "ko", // Corea del Sur
+  CN: "zh", // China
+  IN: "hi", // India (aunque también inglés)
+  SA: "ar", // Arabia Saudita
+  QA: "ar", // Qatar
+  AE: "ar", // Emiratos Árabes Unidos
+  IR: "fa", // Irán
+  TH: "th", // Tailandia
+  VN: "vi", // Vietnam
 
-    // Oceanía
-    AU: "en", // Australia
-    NZ: "en", // Nueva Zelanda
-  };
+  // Oceanía
+  AU: "en", // Australia
+  NZ: "en", // Nueva Zelanda
+};
+
+const mapMongoId = (doc) => ({
+  ...doc,
+  id: doc._id,
+  _id: undefined,
+});
 
 const getNewsForTeam = async (req, res) => {
   const team = req.params.team?.toLowerCase();
   if (!team) return res.json({ status: "error", message: "No team provided" });
 
-  const todayStart = new Date();
-  todayStart.setHours(0, 0, 0, 0);
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+
+  const endOfDay = new Date();
+  endOfDay.setHours(23, 59, 59, 999);
 
   try {
     const cachedNews = await News.find({
       theme: team,
-      publishedAt: { $gte: todayStart },
+      publishedAt: {
+        $gte: startOfDay,
+        $lte: endOfDay,
+      },
     });
 
     if (cachedNews.length > 0) {
@@ -98,7 +111,7 @@ const getNewsForTeam = async (req, res) => {
     }
 
     const feedUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(
-      team
+      team,
     )}&hl=es-419&gl=CO&ceid=CO:es-419`;
 
     const feed = await parser.parseURL(feedUrl);
@@ -126,7 +139,6 @@ const getNewsForTeam = async (req, res) => {
       news: savedArticles.length > 0 ? savedArticles : articles,
     });
   } catch (err) {
-    console.error(err);
     return res.json({
       status: "error",
       message: "An error was found. Try again",
@@ -141,8 +153,11 @@ const getRumorNewsForTeam = async (req, res) => {
     return res.status(400).json({ status: "error", message: "Invalid teamId" });
   }
 
-  const todayStart = new Date();
-  todayStart.setHours(0, 0, 0, 0);
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+
+  const endOfDay = new Date();
+  endOfDay.setHours(23, 59, 59, 999);
 
   try {
     const team = await Team.findOne({ teamId }).lean();
@@ -154,7 +169,10 @@ const getRumorNewsForTeam = async (req, res) => {
 
     const cachedNews = await News.find({
       theme: team.name,
-      publishedAt: { $gte: todayStart },
+      publishedAt: {
+        $gte: startOfDay,
+        $lte: endOfDay,
+      },
     });
 
     if (cachedNews.length > 0) {
@@ -166,12 +184,12 @@ const getRumorNewsForTeam = async (req, res) => {
 
     const newSigns = await getNews(
       `"fichaje confirmado" OR "nuevo jugador" OR "transferencia oficial" OR "presentado como" OR "firma oficial"`,
-      team.name
+      team.name,
     );
 
     const newRumors = await getNews(
       `"rumor de fichaje" OR "posible fichaje" OR "pretende fichar" OR "interesado en" OR "en negociaciones" OR "cerca de fichar" OR "podría fichar" OR "acercamiento"`,
-      team.name
+      team.name,
     );
 
     const existingUrls = await News.find({
@@ -179,10 +197,10 @@ const getRumorNewsForTeam = async (req, res) => {
     }).distinct("url");
 
     const newArticlesSign = newSigns.filter(
-      (a) => !existingUrls.includes(a.url)
+      (a) => !existingUrls.includes(a.url),
     );
     const newArticlesRumor = newRumors.filter(
-      (a) => !existingUrls.includes(a.url)
+      (a) => !existingUrls.includes(a.url),
     );
 
     const savedSigns = await News.insertMany(newArticlesSign, {
@@ -215,8 +233,11 @@ const getPlayerNews = async (req, res) => {
       .json({ status: "error", message: "Invalid playerId" });
   }
 
-  const todayStart = new Date();
-  todayStart.setHours(0, 0, 0, 0);
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+
+  const endOfDay = new Date();
+  endOfDay.setHours(23, 59, 59, 999);
 
   try {
     const player = await Player.findOne({ playerId }).lean();
@@ -229,7 +250,10 @@ const getPlayerNews = async (req, res) => {
     // Buscar noticias en caché ordenadas por fecha (más recientes primero)
     const cachedNews = await News.find({
       theme: player.name,
-      publishedAt: { $gte: todayStart },
+      publishedAt: {
+        $gte: startOfDay,
+        $lte: endOfDay,
+      },
     }).sort({ publishedAt: -1 });
 
     if (cachedNews.length > 0) {
@@ -241,7 +265,7 @@ const getPlayerNews = async (req, res) => {
 
     const query = `"${player.name}" OR ${player.firstname} ${player.lastname}`;
     const feedUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(
-      query
+      query,
     )}&hl=es-419&gl=CO&ceid=CO:es-419`;
 
     const feed = await parser.parseURL(feedUrl);
@@ -272,7 +296,7 @@ const getPlayerNews = async (req, res) => {
     return res.json({
       status: "success",
       news: allNews.sort(
-        (a, b) => new Date(b.publishedAt) - new Date(a.publishedAt)
+        (a, b) => new Date(b.publishedAt) - new Date(a.publishedAt),
       ),
     });
   } catch (err) {
@@ -292,8 +316,11 @@ const getLeagueNews = async (req, res) => {
       .json({ status: "error", message: "Invalid leagueId" });
   }
 
-  const todayStart = new Date();
-  todayStart.setHours(0, 0, 0, 0);
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+
+  const endOfDay = new Date();
+  endOfDay.setHours(23, 59, 59, 999);
 
   try {
     const league = await League.findOne({
@@ -302,7 +329,10 @@ const getLeagueNews = async (req, res) => {
 
     const cachedNews = await News.find({
       theme: league.league.name,
-      publishedAt: { $gte: todayStart },
+      publishedAt: {
+        $gte: startOfDay,
+        $lte: endOfDay,
+      },
     }).sort({ publishedAt: -1 });
 
     if (cachedNews.length > 0) {
@@ -315,7 +345,7 @@ const getLeagueNews = async (req, res) => {
     const lang = countryLangMap[league.country.code] || "en";
     const query = `"${league.league.name}" AND (${league.country.name})`;
     const feedUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(
-      query
+      query,
     )}&hl=es-419&gl=CO&ceid=${league.country.code}:${lang}`;
 
     const feed = await parser.parseURL(feedUrl);
@@ -344,7 +374,7 @@ const getLeagueNews = async (req, res) => {
     return res.json({
       status: "success",
       news: allNews.sort(
-        (a, b) => new Date(b.publishedAt) - new Date(a.publishedAt)
+        (a, b) => new Date(b.publishedAt) - new Date(a.publishedAt),
       ),
     });
   } catch (err) {
@@ -364,8 +394,11 @@ const getCoachNews = async (req, res) => {
       .json({ status: "error", message: "Invalid coachId" });
   }
 
-  const todayStart = new Date();
-  todayStart.setHours(0, 0, 0, 0);
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+
+  const endOfDay = new Date();
+  endOfDay.setHours(23, 59, 59, 999);
 
   try {
     const coach = await Coach.findOne({ coachId }).lean();
@@ -377,7 +410,10 @@ const getCoachNews = async (req, res) => {
 
     const cachedNews = await News.find({
       theme: coach.name,
-      publishedAt: { $gte: todayStart },
+      publishedAt: {
+        $gte: startOfDay,
+        $lte: endOfDay,
+      },
     }).sort({ publishedAt: -1 });
 
     if (cachedNews.length > 0) {
@@ -389,7 +425,7 @@ const getCoachNews = async (req, res) => {
 
     const query = `"${coach.name}" OR ${coach.firstname} ${coach.lastname}`;
     const feedUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(
-      query
+      query,
     )}&hl=es-419&gl=CO&ceid=CO:es-419`;
 
     const feed = await parser.parseURL(feedUrl);
@@ -420,7 +456,7 @@ const getCoachNews = async (req, res) => {
     return res.json({
       status: "success",
       news: allNews.sort(
-        (a, b) => new Date(b.publishedAt) - new Date(a.publishedAt)
+        (a, b) => new Date(b.publishedAt) - new Date(a.publishedAt),
       ),
     });
   } catch (err) {
@@ -431,10 +467,163 @@ const getCoachNews = async (req, res) => {
   }
 };
 
+const getRumorNewsFavoritesGeneral = async (req, res) => {
+  try {
+    // 🕒 Rango del día
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+
+    const endOfDay = new Date();
+    endOfDay.setHours(23, 59, 59, 999);
+
+    // const { id } = req.user;
+    const id = "688a4197bf21fc07760ec724";
+
+    const favorites = await Favorite.findOne({ user: id }).lean();
+
+    if (!favorites || !favorites.equipos || favorites.equipos.length === 0) {
+      return res.json({
+        status: "error",
+        message: "El usuario no tiene equipos favoritos registrados.",
+      });
+    }
+
+    // 🔁 Helper seguro para Mongo
+    const mapMongoId = (doc) => {
+      if (!doc?._id) return doc;
+      return {
+        ...doc,
+        id: doc._id,
+        _id: undefined,
+        __v: undefined,
+      };
+    };
+
+    const newsFavorites = [];
+
+    // 🔁 Recorrer equipos favoritos SECUENCIAL
+    for (const teamName of favorites.equipos) {
+      const team = await Team.findOne({
+        name: new RegExp(`^${teamName}$`, "i"),
+      }).lean();
+
+      if (!team) continue;
+
+      // 🧠 Cache local del día
+      const cachedNews = await News.find({
+        theme: team.name,
+        publishedAt: {
+          $gte: startOfDay,
+          $lte: endOfDay,
+        },
+      }).lean();
+
+      if (cachedNews.length > 0) {
+        newsFavorites.push({
+          news: cachedNews.map(mapMongoId),
+        });
+        continue;
+      }
+
+      // ⚽ Buscar noticias nuevas (API externa)
+      const newSigns = await getNews(
+        `"fichaje confirmado" OR "nuevo jugador" OR "transferencia oficial" OR "presentado como" OR "firma oficial"`,
+        team.name,
+      );
+
+      const newRumors = await getNews(
+        `"rumor de fichaje" OR "posible fichaje" OR "pretende fichar" OR "interesado en" OR "en negociaciones" OR "cerca de fichar" OR "podría fichar" OR "acercamiento"`,
+        team.name,
+      );
+
+      const allNew = [...newSigns, ...newRumors];
+
+      if (allNew.length === 0) {
+        newsFavorites.push({
+          news: [],
+        });
+        continue;
+      }
+
+      // 🔍 Filtrar duplicados por URL
+      const existingUrls = await News.find({
+        url: { $in: allNew.map((a) => a.url) },
+      }).distinct("url");
+
+      const filteredNews = allNew.filter((a) => !existingUrls.includes(a.url));
+
+      // 💾 Guardar nuevos artículos
+      if (filteredNews.length > 0) {
+        await News.insertMany(filteredNews, { ordered: false }).catch(() => []);
+      }
+
+      const finalNews = filteredNews.length > 0 ? filteredNews : allNew;
+
+      newsFavorites.push({
+        news: finalNews,
+      });
+
+      // 🕒 Delay opcional
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+
+    // 🌍 Noticias generales
+    const globalSigns = await getNews(
+      `"fichaje confirmado" OR "transferencia oficial" OR "firma oficial"`,
+      "fútbol",
+    );
+
+    const globalRumors = await getNews(
+      `"rumor de fichaje" OR "posible fichaje" OR "pretende fichar" OR "en negociaciones" OR "cerca de fichar"`,
+      "fútbol",
+    );
+
+    const generalNews = [...globalSigns, ...globalRumors];
+
+    // 🔍 Evitar duplicados globales
+    const existingGlobalUrls = await News.find({
+      url: { $in: generalNews.map((a) => a.url) },
+    }).distinct("url");
+
+    const filteredGeneral = generalNews.filter(
+      (a) => !existingGlobalUrls.includes(a.url),
+    );
+
+    if (filteredGeneral.length > 0) {
+      await News.insertMany(filteredGeneral, { ordered: false }).catch(
+        () => [],
+      );
+    }
+
+    const finalGeneral =
+      filteredGeneral.length > 0 ? filteredGeneral : generalNews;
+
+    const flatFavorites = newsFavorites.flatMap((group) =>
+      Array.isArray(group.news)
+        ? group.news.map((n) => ({
+            ...n,
+          }))
+        : [],
+    );
+
+    return res.json({
+      status: "success",
+      newsFavorites: flatFavorites,
+      generalNews: finalGeneral,
+    });
+  } catch (err) {
+    return res.status(500).json({
+      status: "error",
+      message: "Ocurrió un error al obtener las noticias.",
+    });
+  }
+};
+
 module.exports = {
   getNewsForTeam,
   getRumorNewsForTeam,
   getPlayerNews,
   getLeagueNews,
-  getCoachNews
+  getCoachNews,
+  getRumorNewsFavoritesGeneral,
 };

@@ -1,59 +1,77 @@
-export const PRIORITY_COUNTRIES = [
-   // Europa
-  "England", "Spain", "Italy", "Germany", "France",
-  "Portugal", "Netherlands", "Belgium", "Switzerland",
+const PRIORITY_LEAGUE_IDS = new Set([
+  // ---------- ARGENTINA ----------
+  128, // Liga Profesional Argentina
+  129, // Primera Nacional
+  130, // Copa Argentina
+  131, // Primera B Metropolitana
+  134, // Torneo Federal A
+  483, // Copa de la Superliga
+  810, // Super Copa
+  1032, // Copa de la Liga Profesional
 
-  // América
-  "Argentina", "Brazil", "Colombia", "Mexico",
-  "USA", "Uruguay", "Chile", "Paraguay", "Peru",
-  "Ecuador",
+  // ---------- COLOMBIA ----------
+  239, // Primera A
+  240, // Primera B
+  241, // Copa Colombia
+  712, // Liga Femenina
+  713, // Superliga
 
-  // Asia y Medio Oriente
-  "Saudi Arabia", "Qatar",
-];
+  // ---------- ESPAÑA ----------
+  140, // La Liga
+  142, // Primera División Femenina
+  143, // Copa del Rey
+  556, // Supercopa
+  1058, // Supercopa Femenina
 
-export const PRIORITY_TOURNAMENTS = [
-  // 🌍 Clubes internacionales
-  "UEFA Champions League",
-  "UEFA Europa League",
-  "UEFA Europa Conference League",
-  "Copa Libertadores",
-  "Copa Sudamericana",
-  "CONCACAF Champions",
-  "AFC Champions League",
-  "CAF Champions League",
-  "FIFA Club World Cup",
+  // ---------- ITALIA ----------
+  135, // Serie A
+  137, // Coppa Italia
+  547, // Supercoppa
+  139, // Serie A Women
 
-  // 🌎 Torneos de selecciones
-  "FIFA World Cup",
-  "World Cup",
-  "UEFA Euro",
-  "Copa America",
-  "Africa Cup of Nations",
-  "AFC Asian Cup",
-  "Gold Cup",
-  "CONCACAF Nations League",
-  "UEFA Nations League",
-  "Arab Cup",
-  "Pacific Games",
-  "Indian Ocean Games",
+  // ---------- ALEMANIA ----------
+  78, // Bundesliga
+  81, // DFB Pokal
+  529, // Super Cup
 
-  // 🌍 Clasificatorias / Eliminatorias
-  "World Cup Qualification",
-  "World Cup Qualifiers",
-  "FIFA World Cup Qualifiers",
-  "Euro Qualification",
-  "Euro Qualifiers",
-  "CONMEBOL World Cup Qualifiers",
-  "AFC World Cup Qualifiers",
-  "CAF World Cup Qualifiers",
-  "CONCACAF World Cup Qualifiers",
-  "OFC World Cup Qualifiers",
+    // ---------- INGLATERRA ----------
+  39, // Premier League
+  45, // FA Cup
+  48, // League Cup
 
-  // 🤝 Amistosos internacionales
-  "Friendly",
-  "Friendlies",
-  "International Friendly",
-  "Friendly International",
-  "Int. Friendly"
-];
+      // ---------- FRANCIA ----------
+  61, // Ligue 1
+
+        // ---------- PORTUGAL ----------
+  94, // Primeira Liga
+
+        // ---------- PORTUGAL ----------
+  307, // Arabia Saudita
+  504, //kingd cup
+
+  // ---------- INTERNACIONALES ----------
+  2, // UEFA Champions League
+  3, // UEFA Europa League
+  21, //copa confederaciones
+  4, //Euro Championship
+  8, //World Cup - Women
+  1, // Mundial
+  15, //FIFA Club World Cup
+  34, // World Cup - Qualification South America
+  848, // UEFA Europa Conference League
+  960, // Euro Championship - Qualification
+  1191, // UEFA Europa Cup - Women
+  11, //CONMEBOL Sudamericana
+  926, // Copa America Femenina
+  9, // Copa America
+  13, // CONMEBOL Libertadores
+]);
+
+function isPriorityCompetition(id) {
+  return PRIORITY_LEAGUE_IDS.has(Number(id));
+}
+
+module.exports = {
+  isPriorityCompetition,
+  PRIORITY_LEAGUE_IDS,
+};

@@ -22,7 +22,9 @@
     "mongoose-pagination": "^1.0.0",
     "multer": "^1.4.5-lts.1",
     "node-cron": "^4.2.1",
+    "nodemailer": "^7.0.12",
     "nodemon": "^3.0.1",
+    "openai": "^6.9.1",
     "rss-parser": "^3.13.0",
     "validator": "^13.11.0"
   }

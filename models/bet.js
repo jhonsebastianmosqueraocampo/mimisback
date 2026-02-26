@@ -7,11 +7,11 @@ const userBetSchema = new Schema(
 
     // selección según el tipo de apuesta
     selection: {
-      pick: { type: String },        // para RESULT_1X2 ("LOCAL" | "DRAW" | "AWAY")
-      home: { type: Number },        // para EXACT_SCORE
-      away: { type: Number },        // para EXACT_SCORE
-      side: { type: String },        // para OVER_UNDER ("OVER" | "UNDER")
-      line: { type: Number },        // para OVER_UNDER
+      pick: { type: String }, // para RESULT_1X2 ("LOCAL" | "DRAW" | "AWAY")
+      home: { type: Number }, // para EXACT_SCORE
+      away: { type: Number }, // para EXACT_SCORE
+      side: { type: String }, // para OVER_UNDER ("OVER" | "UNDER")
+      line: { type: Number }, // para OVER_UNDER
     },
 
     result: {
@@ -20,12 +20,8 @@ const userBetSchema = new Schema(
       default: "PENDING",
     },
   },
-  { _id: false }
+  { _id: false },
 );
-
-const winnerSchema = new Schema(
-
-)
 
 const BetSchema = new Schema(
   {
@@ -53,9 +49,16 @@ const BetSchema = new Schema(
       index: true,
     },
     users: [userBetSchema],
-    winner: [{ type: Schema.Types.ObjectId, ref: "User" }]
+    winner: [{ type: Schema.Types.ObjectId, ref: "User" }],
+    isFinished: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+
+    status: Boolean,
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 module.exports = model("Bet", BetSchema, "bets");

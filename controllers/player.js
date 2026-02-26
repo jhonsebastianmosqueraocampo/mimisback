@@ -98,7 +98,7 @@ const infoPlayer = async (req, res) => {
   const { playerId } = req.params;
   let { season } = req.params;
 
-  if (!playerId || isNaN(playerId)) {
+  if (isNaN(playerId) || isNaN(playerId)) {
     return res
       .status(400)
       .json({ status: "error", message: "Invalid playerId" });
@@ -107,7 +107,7 @@ const infoPlayer = async (req, res) => {
     return res.status(400).json({ status: "error", message: "Invalid season" });
   }
 
-  if (season === 0) {
+  if (season == 0) {
     season = await getCurrentSeason({ playerId: playerId });
   }
 
@@ -207,7 +207,6 @@ const infoPlayer = async (req, res) => {
       player: updatedPlayer,
     });
   } catch (error) {
-    console.error("❌ Error en infoPlayer:", error.message);
     return res.json({
       status: "error",
       message: "Server error",
@@ -215,7 +214,150 @@ const infoPlayer = async (req, res) => {
   }
 };
 
+const search = async (req, res) => {
+  try {
+    const { name } = req.params;
+    if (!name || !name.trim()) {
+      return res.status(400).json({
+        status: 'error',
+        message: "Nombre requerido",
+      });
+    }
+
+    const queryName = name.trim().toLowerCase();
+    const regex = new RegExp(escapeRegex(queryName), "i");
+    const now = new Date();
+    const TTL_HOURS = 24;
+
+    // 1️⃣ Buscar en BD (por name, firstname o lastname)
+    const localPlayers = await Player.find({
+      $or: [{ name: regex }, { firstname: regex }, { lastname: regex }],
+    })
+      .select("playerId name firstname lastname photo nationality updatedAt cachedAt")
+      .lean();
+
+    if (localPlayers.length) {
+      // --- Prioridad avanzada ---
+      const scoredPlayers = localPlayers.map((p) => {
+        const nameLower = p.name?.toLowerCase() || "";
+        const firstLower = p.firstname?.toLowerCase() || "";
+        const lastLower = p.lastname?.toLowerCase() || "";
+
+        let score = 0;
+
+        // Exact match
+        if (nameLower === queryName) score += 10;
+        if (firstLower === queryName) score += 8;
+        if (lastLower === queryName) score += 8;
+
+        // Partial match (nombre dentro de otro)
+        if (firstLower.split(" ").includes(queryName)) score += 5;
+        if (nameLower.split(" ").includes(queryName)) score += 5;
+        if (lastLower.split(" ").includes(queryName)) score += 5;
+
+        return { ...p, score };
+      });
+
+      // Ordenar por prioridad (mayor score primero)
+      scoredPlayers.sort((a, b) => b.score - a.score);
+
+      // Si los datos son recientes, devolverlos
+      const lastUpdated = Math.max(
+        ...scoredPlayers.map((p) =>
+          new Date(p.cachedAt || p.updatedAt || 0).getTime()
+        )
+      );
+      const hours = (now.getTime() - lastUpdated) / (1000 * 60 * 60);
+
+      if (hours < TTL_HOURS) {
+        return res.json({
+          status: "success",
+          players: scoredPlayers,
+        });
+      }
+    }
+
+    // 2️⃣ Consultar API-Football
+    const apiUrl = `${API_URL}/players/profiles?search=${encodeURIComponent(queryName)}`;
+    const response = await axios.get(apiUrl, {
+      headers: { "x-apisports-key": API_KEY },
+    });
+
+    let apiPlayers = Array.isArray(response?.data?.response)
+      ? response.data.response
+      : [];
+
+    if (!apiPlayers.length) {
+      return res.json({
+        status: "error",
+        message: `No se encontraron jugadores para "${queryName}"`,
+      });
+    }
+
+    // 3️⃣ Procesar resultados de la API y asignar score igual que en DB
+    const cleanPlayers = [];
+    const seenIds = new Set();
+
+    for (const item of apiPlayers) {
+      const p = item?.player;
+      if (!p?.id || !p?.name || seenIds.has(p.id)) continue;
+      seenIds.add(p.id);
+
+      const nameLower = p.name?.toLowerCase() || "";
+      const firstLower = p.firstname?.toLowerCase() || "";
+      const lastLower = p.lastname?.toLowerCase() || "";
+
+      let score = 0;
+      if (nameLower === queryName) score += 10;
+      if (firstLower === queryName) score += 8;
+      if (lastLower === queryName) score += 8;
+      if (firstLower.split(" ").includes(queryName)) score += 5;
+      if (nameLower.split(" ").includes(queryName)) score += 5;
+      if (lastLower.split(" ").includes(queryName)) score += 5;
+
+      cleanPlayers.push({
+        playerId: p.id,
+        name: p.name,
+        firstname: p.firstname,
+        lastname: p.lastname,
+        photo: p.photo,
+        nationality: p.nationality,
+        age: p.age,
+        cachedAt: now,
+        score,
+      });
+    }
+
+    // 4️⃣ Ordenar por relevancia
+    cleanPlayers.sort((a, b) => b.score - a.score);
+
+    // 5️⃣ Guardar / actualizar en BD
+    const savedPlayers = [];
+    for (const p of cleanPlayers) {
+      const saved = await Player.findOneAndUpdate(
+        { playerId: p.playerId },
+        { $set: p },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      ).select("playerId name firstname lastname photo nationality");
+      savedPlayers.push(saved);
+    }
+
+    return res.json({
+      status: "success",
+      players: cleanPlayers,
+    });
+  } catch (error) {
+    return res.json({
+      status: "error",
+      message: "Error al buscar jugadores. Intenta de nuevo.",
+    });
+  }
+};
+
+const escapeRegex = (text = "") => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 module.exports = {
   getPlayersByTeam,
   infoPlayer,
+  search,
 };

@@ -1,145 +1,204 @@
 const axios = require("axios");
 const GroupStanding = require("../models/groupStanding");
 const CupStanding = require("../models/cupStanding");
+const LiveMatch = require("../models/LiveMatch");
+const ApiFootballCall = require("../models/apifootballCals.js");
 const { getCurrentSeason } = require("../helper/getCurrentSeason");
 require("dotenv").config();
 
 const API_URL = process.env.API_URL;
 const API_KEY = process.env.API_FOOTBALL_KEY;
 
-// 🕒 Función auxiliar para obtener intervalo de refresco dinámico
+// 🕒 Intervalo dinámico
 const getRefreshInterval = (hasLiveMatches) => {
   return hasLiveMatches ? 5 * 60 * 1000 : 2 * 60 * 60 * 1000; // 5 min o 2h
 };
 
 const getCupStandings = async (req, res) => {
-  const leagueId = parseInt(req.params.leagueId, 10);
-  let season = parseInt(req.params.season, 10);
-
-  if (season === 0) {
-    season = await getCurrentSeason({ leagueId: leagueId });
-  }
-
-  if (isNaN(leagueId) || !leagueId || isNaN(season) || !season) {
-    return res.status(400).json({
-      status: "error",
-      message: "Invalid leagueId or season",
-    });
-  }
-
   try {
+    const leagueId = parseInt(req.params.leagueId, 10);
+    let season = parseInt(req.params.season, 10);
+    const userId = req.user.id;
+
+    if (season === 0) {
+      season = await getCurrentSeason({ leagueId, userId });
+    }
+
+    if (!leagueId || !season || isNaN(leagueId) || isNaN(season)) {
+      return res.status(400).json({
+        status: "error",
+        message: "Invalid leagueId or season",
+      });
+    }
+
     const now = new Date();
+    const currentSeason = season;
 
-    // Buscar la última actualización guardada
-    const latestGroup = await GroupStanding.findOne({ leagueId, season }).sort({
-      lastUpdate: -1,
-    });
-    const latestFixture = await CupStanding.findOne({ leagueId, season }).sort({
-      lastUpdate: -1,
-    });
+    const hasLiveMatches =
+      season === currentSeason &&
+      (await LiveMatch.exists({
+        "league.id": leagueId,
+        "league.season": season,
+        "status.short": { $in: ["1H","HT","2H","ET","BT","P","LIVE","INT"] },
+      }));
 
-    // 🟢 Detectar si hay partidos en vivo (para dar prioridad)
-    const hasLiveMatches = await CupStanding.exists({
-      leagueId,
-      season,
-      status: { $in: ["1H", "HT", "2H", "ET", "BT", "P", "LIVE", "INT"] },
-    });
+    const REFRESH_INTERVAL = getRefreshInterval(!!hasLiveMatches);
 
-    const REFRESH_INTERVAL = getRefreshInterval(hasLiveMatches);
+    const latestGroup = await GroupStanding.findOne({ leagueId, season }).sort({ lastUpdate: -1 });
+    const latestFixture = await CupStanding.findOne({ leagueId, season }).sort({ lastUpdate: -1 });
 
-    const groupRecent =
-      latestGroup && now - latestGroup.lastUpdate < REFRESH_INTERVAL;
-    const fixtureRecent =
-      latestFixture && now - latestFixture.lastUpdate < REFRESH_INTERVAL;
+    const groupRecent = latestGroup && now - latestGroup.lastUpdate < REFRESH_INTERVAL;
+    const fixtureRecent = latestFixture && now - latestFixture.lastUpdate < REFRESH_INTERVAL;
 
-    // ⚡ Si los datos son recientes, no llamar a la API
-    if (groupRecent && fixtureRecent) {
+    // ⚡ Si temporada actual y datos recientes → no llamar API
+    if (season === currentSeason && groupRecent && fixtureRecent) {
       const groupPhase = await GroupStanding.find({ leagueId, season });
       const knockoutPhase = await CupStanding.find({ leagueId, season });
+      const liveMatches = await LiveMatch.find({
+        "league.id": leagueId,
+        "league.season": season,
+        "status.short": { $in: ["1H","HT","2H","ET","BT","P","LIVE","INT"] },
+      });
+
       return res.json({
         status: "success",
         hasGroupPhase: groupPhase.length > 0,
         groupPhase,
         knockoutPhase,
-        updated: false, // indicador de que no se actualizó desde la API
+        liveMatches,
       });
     }
 
-    // 🏆 Obtener standings (fase de grupos)
-    const standingsRes = await axios.get(`${API_URL}/standings`, {
-      headers: { "x-apisports-key": API_KEY },
-      params: { league: leagueId, season },
-    });
+    /* ===========================
+       🔹 1️⃣ /standings
+    ============================ */
+
+    const startStandings = Date.now();
+    let standingsRes;
+
+    try {
+      standingsRes = await axios.get(`${API_URL}/standings`, {
+        headers: { "x-apisports-key": API_KEY },
+        params: { league: leagueId, season },
+      });
+
+      await ApiFootballCall.create({
+        endpoint: "/standings",
+        method: "GET",
+        source: "manual",
+        user: userId || null,
+        apiProvider: "api-football",
+        costUnit: 1,
+        statusCode: standingsRes.status,
+        success: true,
+        responseTimeMs: Date.now() - startStandings,
+        remainingRequests:
+          standingsRes.headers?.["x-ratelimit-requests-remaining"] || null,
+      });
+
+    } catch (err) {
+      await ApiFootballCall.create({
+        endpoint: "/standings",
+        method: "GET",
+        source: "manual",
+        user: userId || null,
+        apiProvider: "api-football",
+        costUnit: 1,
+        statusCode: err.response?.status || 500,
+        success: false,
+        responseTimeMs: Date.now() - startStandings,
+        remainingRequests:
+          err.response?.headers?.["x-ratelimit-requests-remaining"] || null,
+        errorMessage: err.message,
+      });
+
+      return res.status(500).json({
+        status: "error",
+        message: "Error fetching standings",
+      });
+    }
 
     const standingsData = standingsRes.data.response;
     let groupPhase = [];
 
-    if (
-      standingsData.length > 0 &&
-      Array.isArray(standingsData[0].league.standings)
-    ) {
+    if (standingsData.length > 0 && Array.isArray(standingsData[0].league.standings)) {
       const allGroups = standingsData[0].league.standings.flat();
-      if (allGroups.length > 0) {
-        groupPhase = allGroups;
+      groupPhase = allGroups;
 
-        for (const team of allGroups) {
-          await GroupStanding.updateOne(
-            {
-              leagueId,
-              season,
-              group: team.group,
-              "team.id": team.team.id,
+      for (const team of allGroups) {
+        await GroupStanding.updateOne(
+          { leagueId, season, group: team.group, "team.id": team.team.id },
+          {
+            leagueId,
+            season,
+            group: team.group,
+            team: {
+              id: team.team.id,
+              name: team.team.name,
+              logo: team.team.logo,
             },
-            {
-              leagueId,
-              season,
-              group: team.group,
-              team: {
-                id: team.team.id,
-                name: team.team.name,
-                logo: team.team.logo,
-              },
-              rank: team.rank,
-              points: team.points,
-              all: team.all,
-              lastUpdate: now,
-            },
-            { upsert: true }
-          );
-        }
+            rank: team.rank,
+            points: team.points,
+            all: team.all,
+            lastUpdate: now,
+          },
+          { upsert: true }
+        );
       }
     }
 
-    // 🧩 Obtener fixtures (fase eliminatoria)
-    const fixturesRes = await axios.get(`${API_URL}/fixtures`, {
-      headers: { "x-apisports-key": API_KEY },
-      params: { league: leagueId, season },
-    });
+    /* ===========================
+       🔹 2️⃣ /fixtures
+    ============================ */
+
+    const startFixtures = Date.now();
+    let fixturesRes;
+
+    try {
+      fixturesRes = await axios.get(`${API_URL}/fixtures`, {
+        headers: { "x-apisports-key": API_KEY },
+        params: { league: leagueId, season },
+      });
+
+      await ApiFootballCall.create({
+        endpoint: "/fixtures",
+        method: "GET",
+        source: "manual",
+        user: userId || null,
+        apiProvider: "api-football",
+        costUnit: 1,
+        statusCode: fixturesRes.status,
+        success: true,
+        responseTimeMs: Date.now() - startFixtures,
+        remainingRequests:
+          fixturesRes.headers?.["x-ratelimit-requests-remaining"] || null,
+      });
+
+    } catch (err) {
+      await ApiFootballCall.create({
+        endpoint: "/fixtures",
+        method: "GET",
+        source: "manual",
+        user: userId || null,
+        apiProvider: "api-football",
+        costUnit: 1,
+        statusCode: err.response?.status || 500,
+        success: false,
+        responseTimeMs: Date.now() - startFixtures,
+        remainingRequests:
+          err.response?.headers?.["x-ratelimit-requests-remaining"] || null,
+        errorMessage: err.message,
+      });
+
+      return res.status(500).json({
+        status: "error",
+        message: "Error fetching fixtures",
+      });
+    }
 
     const fixtures = fixturesRes.data.response;
 
     for (const fixture of fixtures) {
-      const matchData = {
-        leagueId: fixture.league.id,
-        season: fixture.league.season,
-        round: fixture.league.round,
-        date: fixture.fixture.date,
-        homeTeam: {
-          id: fixture.teams.home.id,
-          name: fixture.teams.home.name,
-          logo: fixture.teams.home.logo,
-        },
-        awayTeam: {
-          id: fixture.teams.away.id,
-          name: fixture.teams.away.name,
-          logo: fixture.teams.away.logo,
-        },
-        goals: fixture.goals,
-        score: fixture.score,
-        status: fixture.fixture.status.short,
-        lastUpdate: now,
-      };
-
       await CupStanding.updateOne(
         {
           leagueId,
@@ -148,31 +207,47 @@ const getCupStandings = async (req, res) => {
           "homeTeam.id": fixture.teams.home.id,
           "awayTeam.id": fixture.teams.away.id,
         },
-        matchData,
+        {
+          leagueId,
+          season,
+          round: fixture.league.round,
+          date: fixture.fixture.date,
+          homeTeam: {
+            id: fixture.teams.home.id,
+            name: fixture.teams.home.name,
+            logo: fixture.teams.home.logo,
+          },
+          awayTeam: {
+            id: fixture.teams.away.id,
+            name: fixture.teams.away.name,
+            logo: fixture.teams.away.logo,
+          },
+          goals: fixture.goals,
+          score: fixture.score,
+          status: fixture.fixture.status.short,
+          lastUpdate: now,
+        },
         { upsert: true }
       );
     }
 
-    // 🔁 Consultar datos actualizados desde la DB
     const knockoutPhase = await CupStanding.find({ leagueId, season });
-    const groupPhaseFinal =
-      groupPhase.length > 0
-        ? await GroupStanding.find({ leagueId, season })
-        : [];
+    const groupPhaseFinal = groupPhase.length > 0
+      ? await GroupStanding.find({ leagueId, season })
+      : [];
 
     return res.json({
       status: "success",
       hasGroupPhase: groupPhaseFinal.length > 0,
       groupPhase: groupPhaseFinal,
       knockoutPhase,
-      updated: true, // indicador de que sí se actualizó desde la API
-      refreshInterval: hasLiveMatches ? "5m" : "2h", // info útil para logs o frontend
+      liveMatches: [],
     });
+
   } catch (error) {
-    console.error("Error in getCupStandings:", error?.response?.data || error);
-    return res.json({
+    return res.status(500).json({
       status: "error",
-      message: "An error was found. Please, try again!",
+      message: "An error occurred while fetching cup standings",
     });
   }
 };

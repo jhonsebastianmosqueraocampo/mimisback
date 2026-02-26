@@ -7,6 +7,7 @@ const { sendPushNotification } = require("./pushService");
 
 const notifyFixtures = async () => {
   cron.schedule("*/15 * * * *", async () => {
+    // cron.schedule("* * * * *", async () => {
     const now = new Date();
     const in30 = new Date(now.getTime() + 30 * 60 * 1000);
 

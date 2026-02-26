@@ -3,6 +3,8 @@ const { getLeagueFromCountry } = require("../helper/getLeagueFromCountry");
 const League = require("../models/league");
 const TeamLeague = require("../models/teamLeague");
 const { getCurrentSeason } = require("../helper/getCurrentSeason.js");
+const ApiFootballCall = require("../models/apifootballCals.js");
+const dayjs = require("dayjs");
 require("dotenv").config();
 
 const API_KEY = process.env.API_FOOTBALL_KEY;
@@ -26,7 +28,8 @@ const leagues = async (req, res) => {
 const leaguesFromCountry = async (req, res) => {
   const { country } = req.params;
   try {
-    const leagues = await getLeagueFromCountry(country);
+    const userId = req.user.id;
+    const leagues = await getLeagueFromCountry(country, userId);
     return res.json({
       status: "success",
       leagues,
@@ -42,19 +45,20 @@ const leaguesFromCountry = async (req, res) => {
 const leaguesByTeam = async (req, res) => {
   const teamId = parseInt(req.params.teamId, 10);
   let season = parseInt(req.params.season, 10);
+  const userId = req.user.id;
 
-  if (isNaN(teamId) || !teamId || isNaN(season) || !season) {
+  if (isNaN(teamId) || isNaN(season)) {
     return res
       .status(400)
       .json({ status: "error", message: "Invalid teamId or season" });
   }
 
   if (season === 0) {
-    season = await getCurrentSeason({ teamId: teamId });
+    season = await getCurrentSeason({ teamId, userId });
   }
 
   try {
-    // 1️⃣ Buscar ligas del equipo en la base de datos
+    // 1️⃣ Buscar ligas en DB
     const existingLeagues = await TeamLeague.find({
       "team.id": teamId,
       season,
@@ -65,11 +69,10 @@ const leaguesByTeam = async (req, res) => {
       ? dayjs(existingLeagues[0].lastUpdate)
       : null;
 
-    // 2️⃣ Calcular si es necesario actualizar
     const shouldUpdate =
       !existingLeagues.length ||
       !lastUpdate ||
-      now.diff(lastUpdate, "day") >= 1; // cada 1 día
+      now.diff(lastUpdate, "day") >= 1;
 
     if (!shouldUpdate && existingLeagues.length > 0) {
       return res.json({
@@ -79,13 +82,56 @@ const leaguesByTeam = async (req, res) => {
       });
     }
 
-    // 3️⃣ Consultar API-Football
-    const response = await axios.get(`${API_URL}/leagues`, {
-      headers: { "x-apisports-key": API_KEY },
-      params: { team: teamId, season },
-    });
+    /* ===========================
+       🔹 LLAMADO A API-FOOTBALL
+    ============================ */
 
-    const leagues = response.data.response || [];
+    const start = Date.now();
+    let response;
+
+    try {
+      response = await axios.get(`${API_URL}/leagues`, {
+        headers: { "x-apisports-key": API_KEY },
+        params: { team: teamId, season },
+      });
+
+      await ApiFootballCall.create({
+        endpoint: "/leagues",
+        method: "GET",
+        source: "manual",
+        user: userId || null,
+        apiProvider: "api-football",
+        costUnit: 1,
+        statusCode: response.status,
+        success: true,
+        responseTimeMs: Date.now() - start,
+        remainingRequests:
+          response.headers?.["x-ratelimit-requests-remaining"] || null,
+      });
+
+    } catch (err) {
+      await ApiFootballCall.create({
+        endpoint: "/leagues",
+        method: "GET",
+        source: "manual",
+        user: userId || null,
+        apiProvider: "api-football",
+        costUnit: 1,
+        statusCode: err.response?.status || 500,
+        success: false,
+        responseTimeMs: Date.now() - start,
+        remainingRequests:
+          err.response?.headers?.["x-ratelimit-requests-remaining"] || null,
+        errorMessage: err.message,
+      });
+
+      return res.status(500).json({
+        status: "error",
+        message: "Error while fetching leagues. Try again later.",
+      });
+    }
+
+    const leagues = response.data?.response || [];
 
     if (!leagues.length) {
       return res.status(404).json({
@@ -121,7 +167,7 @@ const leaguesByTeam = async (req, res) => {
 
       savedLeagues.push(updated);
 
-      // pequeña espera entre iteraciones (precaución ante rate limit)
+      // pequeña espera
       await new Promise((r) => setTimeout(r, 200));
     }
 
@@ -130,8 +176,8 @@ const leaguesByTeam = async (req, res) => {
       updated: true,
       leagues: savedLeagues,
     });
+
   } catch (error) {
-    console.error("❌ leaguesByTeam error:", error.message);
     return res.status(500).json({
       status: "error",
       message: "Error while fetching leagues. Try again later.",
@@ -141,6 +187,7 @@ const leaguesByTeam = async (req, res) => {
 
 const leagueById = async (req, res) => {
   const id = parseInt(req.params.id, 10);
+  const userId = req.user.id;
 
   if (isNaN(id) || !id) {
     return res
@@ -171,11 +218,54 @@ const leagueById = async (req, res) => {
 
     console.log(`🔁 Actualizando datos de la liga ${id}...`);
 
-    // 3️⃣ Consultar API-Football
-    const response = await axios.get(`${API_URL}/leagues`, {
-      headers: { "x-apisports-key": API_KEY },
-      params: { id },
-    });
+    /* ===========================
+       🔹 LLAMADO A API-FOOTBALL
+    ============================ */
+
+    const start = Date.now();
+    let response;
+
+    try {
+      response = await axios.get(`${API_URL}/leagues`, {
+        headers: { "x-apisports-key": API_KEY },
+        params: { id },
+      });
+
+      await ApiFootballCall.create({
+        endpoint: "/leagues",
+        method: "GET",
+        source: "manual",
+        user: userId || null,
+        apiProvider: "api-football",
+        costUnit: 1,
+        statusCode: response.status,
+        success: true,
+        responseTimeMs: Date.now() - start,
+        remainingRequests:
+          response.headers?.["x-ratelimit-requests-remaining"] || null,
+      });
+
+    } catch (err) {
+      await ApiFootballCall.create({
+        endpoint: "/leagues",
+        method: "GET",
+        source: "manual",
+        user: userId || null,
+        apiProvider: "api-football",
+        costUnit: 1,
+        statusCode: err.response?.status || 500,
+        success: false,
+        responseTimeMs: Date.now() - start,
+        remainingRequests:
+          err.response?.headers?.["x-ratelimit-requests-remaining"] || null,
+        errorMessage: err.message,
+      });
+
+      return res.json({
+        status: "error",
+        message: "Error fetching league data",
+      });
+    }
 
     const result = response.data?.response?.[0];
     if (!result) {
@@ -194,18 +284,19 @@ const leagueById = async (req, res) => {
     };
 
     // 4️⃣ Guardar o actualizar en DB
-    await League.findOneAndUpdate({ "league.id": id }, objectLeague, {
-      upsert: true,
-      new: true,
-    });
+    await League.findOneAndUpdate(
+      { "league.id": id },
+      objectLeague,
+      { upsert: true, new: true }
+    );
 
     return res.json({
       status: "success",
       updated: true,
       league: objectLeague,
     });
+
   } catch (error) {
-    console.error("❌ leagueById error:", error.message);
     return res.json({
       status: "error",
       message: "Error fetching league data",

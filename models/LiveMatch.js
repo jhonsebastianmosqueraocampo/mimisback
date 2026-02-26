@@ -53,6 +53,8 @@ const PlayerLiveSchema = new Schema(
     number: Number,
     pos: String, // G, D, M, F
     grid: String, // "row:col" para posicionar
+    photo: String,
+    rating: Number,
     isSub: { type: Boolean, default: false }, // entró de cambio
   },
   { _id: false }
@@ -138,6 +140,7 @@ const LiveMatchSchema = new Schema({
   lineupsChecked: { type: Boolean, default: false },
 
   lastUpdated: { type: Date, default: Date.now },
+  finalizedAt: { type: Date, default: null },
 });
 
 module.exports = model("LiveMatch", LiveMatchSchema);

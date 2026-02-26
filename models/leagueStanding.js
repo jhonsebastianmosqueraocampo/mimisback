@@ -57,10 +57,17 @@ const LeagueStandingSchema = new Schema({
     flag: String,
   },
   standings: [TeamStandingSchema],
+  raw: {
+    type: Schema.Types.Mixed,
+  },
   lastUpdate: {
     type: Date,
     default: Date.now,
-  }
+  },
 });
 
-module.exports = model("LeagueStanding", LeagueStandingSchema, "leagueStandings");
+module.exports = model(
+  "LeagueStanding",
+  LeagueStandingSchema,
+  "leagueStandings",
+);

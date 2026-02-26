@@ -1,6 +1,9 @@
 const Bet = require("../models/bet");
+const User = require("../models/user");
 const PredictionOdds = require("../models/predictionOdds");
 const Fixture = require("../models/fixture");
+const LiveMatch = require("../models/LiveMatch");
+const mongoose = require("mongoose");
 
 const create = async (req, res) => {
   try {
@@ -49,8 +52,7 @@ const create = async (req, res) => {
       accessCode,
     });
   } catch (error) {
-    console.error("❌ Error creando la apuesta:", error);
-    return res.status(500).json({
+    return res.json({
       status: "error",
       message: "Error creando la apuesta",
     });
@@ -87,7 +89,126 @@ const infoBetId = async (req, res) => {
     return res.json({
       status: "error",
       message: "Error creando la apuesta",
-      betInfo: null,
+    });
+  }
+};
+
+const infoLiveBetId = async (req, res) => {
+  try {
+    const { betId } = req.params;
+
+    // 1️⃣ Validar ObjectId
+    if (!mongoose.Types.ObjectId.isValid(betId)) {
+      return res.status(400).json({
+        status: "error",
+        message: "betId inválido",
+      });
+    }
+
+    // 2️⃣ Buscar apuesta
+    const bet = await Bet.findById(betId).lean();
+    if (!bet) {
+      return res.status(404).json({
+        status: "error",
+        message: "Apuesta no encontrada",
+      });
+    }
+    // 3️⃣ Buscar LiveMatch asociado
+    const fixture = await LiveMatch.findOne({
+      fixtureId: bet.fixtureId,
+    }).lean();
+
+    // 🔥 Agregamos liveMatch
+    bet.liveMatch = fixture ?? null;
+
+    if (!fixture) {
+      return res.json({
+        status: "success",
+        bet,
+      });
+    }
+
+    // 4️⃣ Si ya tiene ganador y está finalizado, devolver directo
+    if (bet.winner?.length > 0 && fixture?.status?.short === "FT") {
+      return res.json({
+        status: "success",
+        bet,
+      });
+    }
+
+    // 5️⃣ Si terminó el partido → evaluar resultados
+    if (fixture?.status?.short === "FT") {
+      let winners = [];
+
+      const updatedUsers = (bet.users ?? []).map((u) => {
+        let result = "PENDING";
+
+        if (bet.betType === "RESULT_1X2") {
+          const finalResult =
+            fixture.goals.home > fixture.goals.away
+              ? "LOCAL"
+              : fixture.goals.home < fixture.goals.away
+                ? "AWAY"
+                : "DRAW";
+
+          result = u?.selection?.pick === finalResult ? "WIN" : "LOSE";
+        }
+
+        if (bet.betType === "EXACT_SCORE") {
+          result =
+            u?.selection?.home === fixture.goals.home &&
+            u?.selection?.away === fixture.goals.away
+              ? "WIN"
+              : "LOSE";
+        }
+
+        if (bet.betType === "OVER_UNDER") {
+          const totalGoals =
+            (fixture.goals.home ?? 0) + (fixture.goals.away ?? 0);
+
+          const condition =
+            u?.selection?.side === "OVER"
+              ? totalGoals > u?.selection?.line
+              : totalGoals < u?.selection?.line;
+
+          result = condition ? "WIN" : "LOSE";
+        }
+
+        if (result === "WIN") {
+          winners.push(u.userId.toString());
+        }
+
+        return { ...u, result };
+      });
+
+      const normalizedUsers = updatedUsers.map((u) => ({
+        ...u,
+        result: winners.includes(u.userId.toString()) ? "WIN" : "LOSE",
+      }));
+
+      bet.users = normalizedUsers;
+      bet.winner = winners;
+
+      // 6️⃣ Persistir cambios
+      await Bet.updateOne(
+        { _id: bet._id },
+        {
+          $set: {
+            users: normalizedUsers,
+            winner: winners,
+          },
+        },
+      );
+    }
+
+    return res.json({
+      status: "success",
+      bet,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      status: "error",
+      message: "Error obteniendo información de la apuesta",
     });
   }
 };
@@ -123,31 +244,32 @@ const infoCode = async (req, res) => {
       status: "success",
       betInfo,
       alreadyBet,
-      userSelection: currentUser?.selection || null
+      userSelection: currentUser?.selection || null,
     });
   } catch (error) {
     return res.json({
       status: "error",
       message: "Error creando la apuesta",
-      betInfo: null,
     });
   }
 };
 
 const joinBet = async (req, res) => {
+  console.log(req.body)
   try {
     const { betId } = req.params;
-    const { selection } = req.body;
-
-    if (!betId || !selection) {
-      return res.status(400).json({
-        status: "error",
-        message: "betId y selection son obligatorios",
-      });
-    }
+    const { pick, home, away, side, line } = req.body;
 
     const userId = req.user.id;
     const name = req.user.nickName;
+
+    // 1️⃣ Validar ObjectId
+    if (!mongoose.Types.ObjectId.isValid(betId)) {
+      return res.status(400).json({
+        status: "error",
+        message: "betId inválido",
+      });
+    }
 
     const bet = await Bet.findById(betId);
     if (!bet) {
@@ -157,16 +279,58 @@ const joinBet = async (req, res) => {
       });
     }
 
-    // Verificar si ya existe el usuario en esta mesa
+    // 3️⃣ Construir selection dinámicamente según tipo
+    let selection = {};
+
+    switch (bet.betType) {
+      case "RESULT_1X2":
+        const allowedPicks = ["LOCAL", "DRAW", "AWAY"];
+        if (!allowedPicks.includes(pick)) {
+          return res.status(400).json({
+            status: "error",
+            message: "Pick inválido",
+          });
+        }
+        selection = { pick };
+        break;
+
+      case "EXACT_SCORE":
+        if (typeof home !== "number" || typeof away !== "number") {
+          return res.status(400).json({
+            status: "error",
+            message: "Debe enviar home y away como números",
+          });
+        }
+        selection = { home, away };
+        break;
+
+      case "OVER_UNDER":
+        const allowedSides = ["OVER", "UNDER"];
+        if (!allowedSides.includes(side) || typeof line !== "number") {
+          return res.status(400).json({
+            status: "error",
+            message: "Datos inválidos para OVER_UNDER",
+          });
+        }
+        selection = { side, line };
+        break;
+
+      default:
+        return res.status(400).json({
+          status: "error",
+          message: "Tipo de apuesta no válido",
+        });
+    }
+
+    // 4️⃣ Verificar si el usuario ya existe en la apuesta
     const existingUser = bet.users.find(
-      (u) => u.userId.toString() === userId.toString()
+      (u) => u.userId.toString() === userId.toString(),
     );
 
     if (existingUser) {
-      // actualizar selección
       existingUser.selection = selection;
+      existingUser.result = "PENDING";
     } else {
-      // agregar nuevo usuario
       bet.users.push({
         userId,
         name,
@@ -182,10 +346,10 @@ const joinBet = async (req, res) => {
       message: "Apuesta registrada correctamente",
     });
   } catch (error) {
-    console.error("❌ Error en joinBet:", error);
+    console.error("joinBet error:", error);
     return res.status(500).json({
       status: "error",
-      message: "Error guardando la apuesta",
+      message: "Error interno del servidor",
     });
   }
 };
@@ -194,7 +358,6 @@ const myBets = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // Buscar apuestas creadas o donde el user participa
     const bets = await Bet.find({
       $or: [{ createdBy: userId }, { "users.userId": userId }],
     }).lean();
@@ -203,19 +366,39 @@ const myBets = async (req, res) => {
       return res.json({ status: "success", bets: [] });
     }
 
+    // 1️⃣ Obtener todos los fixtureIds
+    const fixtureIds = bets.map((b) => b.fixtureId);
+
+    // 2️⃣ Traer todos los LiveMatch en una sola query
+    const fixtures = await LiveMatch.find({
+      fixtureId: { $in: fixtureIds },
+    }).lean();
+
+    // 3️⃣ Crear mapa fixtureId → fixture
+    const fixtureMap = new Map(fixtures.map((f) => [f.fixtureId, f]));
+
     const processed = [];
+
     for (let bet of bets) {
-      const fixture = await Fixture.findOne({ fixtureId: bet.fixtureId }).lean();
+      const fixture = fixtureMap.get(bet.fixtureId) || null;
+
+      // 🔥 Agregamos liveMatch al objeto
+      bet.liveMatch = fixture;
+
       if (!fixture) {
         processed.push(bet);
         continue;
       }
 
-      // Validar si terminó el partido
-      if (fixture.status.short === "FT") {
+      if (bet.winner?.length > 0 && fixture?.status?.short === "FT") {
+        processed.push(bet);
+        continue;
+      }
+
+      // 4️⃣ Si terminó el partido
+      if (fixture?.status?.short === "FT") {
         let winners = [];
 
-        // Evaluar selección de cada usuario
         const updatedUsers = bet.users.map((u) => {
           let result = "PENDING";
 
@@ -224,26 +407,28 @@ const myBets = async (req, res) => {
               fixture.goals.home > fixture.goals.away
                 ? "LOCAL"
                 : fixture.goals.home < fixture.goals.away
-                ? "AWAY"
-                : "DRAW";
+                  ? "AWAY"
+                  : "DRAW";
 
-            result = u.selection.pick === finalResult ? "WIN" : "LOSE";
+            result = u?.selection?.pick === finalResult ? "WIN" : "LOSE";
           }
 
           if (bet.betType === "EXACT_SCORE") {
             result =
-              u.selection.home === fixture.goals.home &&
-              u.selection.away === fixture.goals.away
+              u?.selection?.home === fixture.goals.home &&
+              u?.selection?.away === fixture.goals.away
                 ? "WIN"
                 : "LOSE";
           }
 
           if (bet.betType === "OVER_UNDER") {
-            const totalGoals = fixture.goals.home + fixture.goals.away;
+            const totalGoals =
+              (fixture.goals.home ?? 0) + (fixture.goals.away ?? 0);
+
             const condition =
-              u.selection.side === "OVER"
-                ? totalGoals > u.selection.line
-                : totalGoals < u.selection.line;
+              u?.selection?.side === "OVER"
+                ? totalGoals > u?.selection?.line
+                : totalGoals < u?.selection?.line;
 
             result = condition ? "WIN" : "LOSE";
           }
@@ -255,51 +440,25 @@ const myBets = async (req, res) => {
           return { ...u, result };
         });
 
-        // Si hay al menos un ganador
-        if (winners.length > 0) {
-          // Todos los que no estén en winners se marcan como LOSE
-          const normalizedUsers = updatedUsers.map((u) => {
-            if (winners.includes(u.userId.toString())) {
-              return { ...u, result: "WIN" };
-            } else {
-              return { ...u, result: "LOSE" };
-            }
-          });
+        const normalizedUsers = updatedUsers.map((u) => ({
+          ...u,
+          result: winners.includes(u.userId.toString()) ? "WIN" : "LOSE",
+        }));
 
-          bet.users = normalizedUsers;
-          bet.winners = winners; // 👈 ahora es un array
+        bet.users = normalizedUsers;
+        bet.winner = winners;
 
-          // Guardar cambios en DB
-          await Bet.updateOne(
-            { _id: bet._id },
-            {
-              $set: {
-                users: normalizedUsers,
-                winners: winners,
-              },
-            }
-          );
-        } else {
-          // Nadie ganó => todos quedan en LOSE
-          const normalizedUsers = updatedUsers.map((u) => ({
-            ...u,
-            result: "LOSE",
-          }));
-
-          bet.users = normalizedUsers;
-          bet.winners = [];
-
-          await Bet.updateOne(
-            { _id: bet._id },
-            {
-              $set: {
-                users: normalizedUsers,
-                winners: [],
-              },
-            }
-          );
-        }
+        await Bet.updateOne(
+          { _id: bet._id },
+          {
+            $set: {
+              users: normalizedUsers,
+              winner: winners, // 👈 corregido (era winners)
+            },
+          },
+        );
       }
+
       processed.push(bet);
     }
 
@@ -308,6 +467,7 @@ const myBets = async (req, res) => {
       bets: processed,
     });
   } catch (error) {
+    console.error("myBets error:", error);
     return res.status(500).json({
       status: "error",
       message: "Error obteniendo apuestas",
@@ -315,10 +475,88 @@ const myBets = async (req, res) => {
   }
 };
 
+const betSetResults = async (req, res) => {
+  try {
+    const { betId } = req.params;
+    const { betResume } = req.body; // [{ userId:'', winner:true/false }]
+
+    if (!betId || !Array.isArray(betResume)) {
+      return res.json({
+        status: "error",
+        message: "Parámetros inválidos. Se requiere betId y betResume válido.",
+      });
+    }
+
+    // 1️⃣ Buscar la apuesta
+    const bet = await Bet.findById(betId);
+    if (!bet) {
+      return res.json({
+        status: "error",
+        message: "Apuesta no encontrada",
+      });
+    }
+
+    // 2️⃣ Calcular puntos totales del pozo
+    const totalPot = bet.stake * bet.users.length;
+    const winners = betResume.filter((r) => r.winner);
+    const perWinnerReward = winners.length > 0 ? totalPot / winners.length : 0;
+
+    // 3️⃣ Actualizar los resultados en el array de usuarios dentro de la apuesta
+    bet.users = bet.users.map((u) => {
+      const found = betResume.find(
+        (r) => String(r.userId) === String(u.userId),
+      );
+      if (found) {
+        u.result = found.winner ? "WIN" : "LOSE";
+      }
+      return u;
+    });
+    bet.winner = winners.map((w) => w.userId);
+    bet.isFinished = true;
+    // 4️⃣ Guardar cambios en la apuesta
+    await bet.save();
+
+    // 5️⃣ Actualizar puntos y estadísticas de los usuarios
+    for (const userRes of betResume) {
+      const user = await User.findById(userRes.userId);
+      if (!user) continue;
+
+      if (userRes.winner) {
+        // 🏆 Ganó: sumar puntos y estadísticas
+        user.points += perWinnerReward;
+        user.xp += Math.floor(perWinnerReward / 10); // bonus XP proporcional
+        user.betsWon += 1;
+      } else {
+        // ❌ Perdió: restar lo apostado y aumentar perdidas
+        user.points = Math.max(0, user.points - bet.stake);
+        user.betsLost += 1;
+      }
+
+      // 🔄 Recalcular nivel del usuario
+      user.calculateLevel();
+
+      await user.save();
+    }
+
+    return res.json({
+      status: "success",
+      message: "Resultados actualizados, puntos y estadísticas aplicadas.",
+    });
+  } catch (error) {
+    console.error("❌ Error en betSetResults:", error);
+    return res.json({
+      status: "error",
+      message: "Error al actualizar los resultados.",
+    });
+  }
+};
+
 module.exports = {
   create,
   infoBetId,
+  infoLiveBetId,
   infoCode,
   joinBet,
-  myBets
+  myBets,
+  betSetResults,
 };

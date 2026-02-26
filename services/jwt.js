@@ -10,7 +10,7 @@ const generateAccessToken = (user) => {
         id: user._id,
         nickName: user.nickName,
         iat: moment().unix(),
-        exp: moment().add(15, "minutes").unix()
+        exp: moment().add(120, "minutes").unix()
     }
 
     return jwts.encode(payload, ACCESS_SECRET);

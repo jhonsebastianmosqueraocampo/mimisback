@@ -11,28 +11,24 @@ const getTeamSummary = async (req, res) => {
     const { leagueId, teamId } = req.params;
     let { season } = req.params;
 
-    if (!leagueId || !teamId || !season) {
+    if (isNaN(Number(leagueId)) || !teamId || isNaN(Number(teamId)) || isNaN(Number(season))) {
       return res.status(400).json({
         success: false,
-        message:
-          "Parámetros requeridos: leagueId, teamId y season son requeridos",
+        message: "Parámetros requeridos: leagueId, teamId y season son requeridos",
       });
     }
 
     if (season === 0) {
-      season = await getCurrentSeason({ leagueId: leagueId });
+      season = await getCurrentSeason({ leagueId });
     }
 
-    // 1️⃣ Verificar si ya existe y fue actualizado hace menos de 1h
+    // 1️⃣ Cache: verificar si ya existe y fue actualizado hace menos de 1h
     const existing = await TeamSummary.findOne({ leagueId, teamId, season });
-    if (
-      existing &&
-      Date.now() - existing.lastUpdated.getTime() < 60 * 60 * 1000
-    ) {
+    if (existing && Date.now() - existing.lastUpdated.getTime() < 60 * 60 * 1000) {
       return res.json({ status: "success", summary: existing });
     }
 
-    // 2️⃣ Obtener standings
+    // 2️⃣ Standings
     let standing = null;
     try {
       const standingsRes = await axios.get(`${API_URL}/standings`, {
@@ -48,7 +44,7 @@ const getTeamSummary = async (req, res) => {
       console.warn("⚠️ No se pudo obtener standings:", err.message);
     }
 
-    // 3️⃣ Jugador clave (mejorado)
+    // 3️⃣ Jugador clave — Impact Score balanceado
     let topPlayer = null;
     try {
       const playersRes = await axios.get(`${API_URL}/players`, {
@@ -57,31 +53,69 @@ const getTeamSummary = async (req, res) => {
       });
 
       const players = playersRes.data.response || [];
-
       if (players.length > 0) {
-        const scoredPlayers = players.map((p) => {
-          const stats = p.statistics?.[0];
-          const goals = stats?.goals?.total || 0;
-          const assists = stats?.goals?.assists || 0;
-          const games = stats?.games?.appearences || 0;
-          const rating = parseFloat(stats?.games?.rating) || 0;
+        // Ponderaciones por posición
+        const weights = {
+          G: { saves: 2.0, cleanSheets: 3.0, rating: 1.2, games: 0.2 },
+          D: { tackles: 1.5, duels: 1.0, passes: 0.5, rating: 1.2 },
+          M: { assists: 2.0, passes: 1.0, duels: 0.8, rating: 1.2 },
+          F: { goals: 3.0, assists: 2.0, rating: 1.2, duels: 0.5 },
+        };
 
-          // Cálculo ponderado de impacto
-          const score = goals * 4 + assists * 3 + rating * 2 + games * 0.1;
+        const perMatch = (value, games) => (games > 0 ? value / games : 0);
+
+        const scoredPlayers = players.map((p) => {
+          const s = p.statistics?.[0];
+          if (!s) return null;
+
+          const games = s.games?.appearences || 0;
+          const pos = (s.games?.position || "M")[0];
+          const w = weights[pos] || weights.M;
+          const rating = parseFloat(s.games?.rating) || 0;
+
+          const goals = s.goals?.total || 0;
+          const assists = s.goals?.assists || 0;
+          const tackles = s.tackles?.total || 0;
+          const interceptions = s.tackles?.interceptions || 0;
+          const duelsTotal = s.duels?.total || 0;
+          const duelsWon = s.duels?.won || 0;
+          const accuracy = parseFloat(s.passes?.accuracy) || 0;
+          const saves = s.goals?.saves || 0;
+          const conceded = s.goals?.conceded || 0;
+
+          // Clean sheet detection (para porteros)
+          const cleanSheet = conceded === 0 && pos === "G" ? 1 : 0;
+
+          // Calcular score ponderado
+          let score =
+            (perMatch(goals, games) * (w.goals || 0)) +
+            (perMatch(assists, games) * (w.assists || 0)) +
+            (perMatch(tackles + interceptions, games) * (w.tackles || 0)) +
+            (perMatch(duelsWon / (duelsTotal || 1), games) * (w.duels || 0)) +
+            (accuracy * (w.passes || 0) / 100) +
+            (rating * (w.rating || 0)) +
+            (games * (w.games || 0)) +
+            (perMatch(saves, games) * (w.saves || 0)) +
+            (cleanSheet * (w.cleanSheets || 0));
+
+          // Penalizaciones: pocos partidos o outliers
+          if (games < 3 && rating > 8) score *= 0.7;
+          if (games < 5) score *= 0.85; // poca regularidad
 
           return {
             id: p.player.id,
             name: p.player.name,
             photo: p.player.photo,
+            position: s.games?.position,
+            games,
+            rating,
             goals,
             assists,
-            rating,
-            games,
-            score,
+            score: Number(score.toFixed(2)),
           };
-        });
+        }).filter(Boolean);
 
-        // Ordenar por score total
+        // Ordenar por impacto
         scoredPlayers.sort((a, b) => b.score - a.score);
         topPlayer = scoredPlayers[0];
       }
@@ -189,10 +223,12 @@ const getTeamSummary = async (req, res) => {
         ? {
             name: topPlayer.name,
             photo: topPlayer.photo,
+            position: topPlayer.position,
             goals: topPlayer.goals,
             assists: topPlayer.assists,
             rating: topPlayer.rating,
             games: topPlayer.games,
+            impactScore: topPlayer.score,
           }
         : null,
       nextMatch,

@@ -10,18 +10,13 @@ const getPlayerCareer = async (req, res) => {
   const { playerId } = req.params;
   let { season } = req.params;
 
-  if (!playerId || isNaN(playerId)) {
+  if ( isNaN(playerId) || isNaN(season)) {
     return res
       .status(400)
-      .json({ status: "error", message: "Invalid playerId" });
-  }
-  if (!season || isNaN(season)) {
-    return res
-      .status(400)
-      .json({ status: "error", message: "Invalid season" });
+      .json({ status: "error", message: "Invalid playerId or season" });
   }
 
-  if (season === 0) {
+  if (season == 0) {
     season = await getCurrentSeason({ playerId: playerId });
   }
 
@@ -97,7 +92,6 @@ const getPlayerCareer = async (req, res) => {
       career: updatedCareer,
     });
   } catch (error) {
-    console.error("❌ Error en getPlayerCareer:", error.message);
     res.json({
       status: "error",
       message: "Error obteniendo trayectoria del jugador",

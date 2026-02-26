@@ -4,6 +4,7 @@ const moment = require("moment");
 const ACCESS_SECRET = process.env.ACCESS_SECRET;
 
 const auth = (req, res, next) => {
+
     if(!req.headers.authorization){
         return res.status(400).json({
             status: "error",
@@ -21,7 +22,7 @@ const auth = (req, res, next) => {
         }
         req.user = payload;
     } catch (error) {
-        return res.status(400).json({
+        return res.status(403).json({
             status: "error",
             mensaje: "Token invalido"
         })

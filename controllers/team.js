@@ -1,4 +1,5 @@
 const Team = require("../models/team");
+const Favorite = require("../models/favorite");
 const TeamPlayerStatByLeague = require("../models/TeamPlayerStatByLeague");
 const Squad = require("../models/squad");
 const axios = require("axios");
@@ -12,17 +13,17 @@ const API_URL = process.env.API_URL;
 
 const teams = async (req, res) => {
   const leagueId = parseInt(req.params.leagueId, 10);
-  if (isNaN(leagueId) || !leagueId) {
-    return res.json({ status: "error", message: "Invalid leagueId" });
-  }
   let season = parseInt(req.params.season, 10);
-  if (isNaN(season) || !season) {
-    return res.json({ status: "error", message: "Invalid season" });
+
+  if (isNaN(leagueId) || isNaN(season)) {
+    return res.json({ status: "error", message: "Invalid leagueId or season" });
   }
 
-  if (season === 0) {
+  if (season == 0) {
     season = await getCurrentSeason({ leagueId: leagueId });
   }
+
+  console.log(season)
 
   try {
     const existingTeams = await Team.find({ leagueId: Number(leagueId) });
@@ -72,6 +73,7 @@ const teams = async (req, res) => {
 };
 
 const getTeam = async (req, res) => {
+  const userId = req.user.id;
   const teamId = parseInt(req.params.teamId, 10);
 
   if (isNaN(teamId) || !teamId) {
@@ -81,8 +83,12 @@ const getTeam = async (req, res) => {
   try {
     let team = await Team.findOne({ teamId }).lean();
 
+     // Buscar favoritos del usuario
+    const favorites = await Favorite.findOne({ user: userId }).lean();
+
     if (team) {
-      return res.json({ status: "success", team });
+      const isFavorite = favorites?.equipos?.includes(team?.name) || false;
+      return res.json({ status: "success", team, isFavorite });
     }
 
     const { data } = await axios.get(`${API_URL}/teams`, {
@@ -107,9 +113,11 @@ const getTeam = async (req, res) => {
       logo: responseTeam.team.logo,
     });
 
-    return res.json({ status: "success", team: newTeam });
+    const newIsFavorite =
+      favorites?.equipos?.includes(responseTeam.team.name) || false;
+
+    return res.json({ status: "success", team: newTeam, isFavorite: newIsFavorite, });
   } catch (error) {
-    console.error("Error getting team:", error.message);
     return res.status(500).json({
       status: "error",
       message: "An error was found. Try again",
@@ -120,8 +128,7 @@ const getTeam = async (req, res) => {
 const getTeamPlayerStats = async (req, res) => {
   const teamId = parseInt(req.params.teamId, 10);
   let season = parseInt(req.params.season, 10);
-
-  if (!teamId || isNaN(teamId) || !season || isNaN(season)) {
+  if (isNaN(teamId) || isNaN(season)) {
     return res.json({ status: "error", message: "Invalid parameters" });
   }
 
@@ -283,7 +290,7 @@ const getTeamPlayerStatsByLeague = async (req, res) => {
       data: updatedDoc,
     });
   } catch (error) {
-    return res.status(500).json({
+    return res.json({
       status: "error",
       message: "An error was found. Please, try again",
     });
@@ -359,10 +366,141 @@ const getSquad = async (req, res) => {
   }
 };
 
+const search = async (req, res) => {
+  try {
+    const { name } = req.params;
+    if (!name || !name.trim()) {
+      return res.status(400).json({
+        status: 'error',
+        message: "Nombre requerido",
+      });
+    }
+
+    const queryName = name.trim().toLowerCase();
+    const regex = new RegExp(escapeRegex(queryName), "i");
+    const now = new Date();
+    const TTL_HOURS = 24;
+
+    // 1️⃣ Buscar en base de datos
+    const localTeams = await Team.find({ name: regex })
+      .select("teamId leagueId name logo country updatedAt")
+      .lean();
+
+    if (localTeams.length) {
+      // 🧠 Calcular relevancia
+      const scoredTeams = localTeams.map((t) => {
+        const nameLower = t.name?.toLowerCase() || "";
+        let score = 0;
+
+        // Exact match
+        if (nameLower === queryName) score += 10;
+
+        // Palabras completas que coinciden
+        if (nameLower.split(" ").includes(queryName)) score += 6;
+
+        // Coincidencia parcial
+        if (nameLower.includes(queryName)) score += 3;
+
+        return { ...t, score };
+      });
+
+      // 🔹 Ordenar por relevancia y fecha de actualización
+      scoredTeams.sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        return new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0);
+      });
+
+      // 🔹 Verificar si los datos son recientes (<24h)
+      const lastUpdated = Math.max(
+        ...scoredTeams.map((t) => new Date(t.updatedAt || 0).getTime())
+      );
+      const hours = (now.getTime() - lastUpdated) / (1000 * 60 * 60);
+
+      if (hours < TTL_HOURS) {
+        return res.json({
+          status: "success",
+          teams: scoredTeams,
+        });
+      }
+    }
+
+    // 2️⃣ Consultar API-Football
+    const apiUrl = `${API_URL}/teams?search=${encodeURIComponent(queryName)}`;
+    const response = await axios.get(apiUrl, {
+      headers: { "x-apisports-key": API_KEY },
+    });
+
+    const apiTeams = Array.isArray(response?.data?.response)
+      ? response.data.response
+      : [];
+
+    if (!apiTeams.length) {
+      return res.json({
+        status: "error",
+        message: `No se encontraron equipos para "${queryName}"`,
+      });
+    }
+
+    // 3️⃣ Procesar resultados con sistema de score
+    const cleanTeams = [];
+    const seenIds = new Set();
+
+    for (const item of apiTeams) {
+      const t = item?.team;
+      if (!t?.id || !t?.name || seenIds.has(t.id)) continue;
+      seenIds.add(t.id);
+
+      const nameLower = t.name?.toLowerCase() || "";
+      let score = 0;
+      if (nameLower === queryName) score += 10;
+      if (nameLower.split(" ").includes(queryName)) score += 6;
+      if (nameLower.includes(queryName)) score += 3;
+
+      cleanTeams.push({
+        teamId: t.id,
+        name: t.name,
+        logo: t.logo,
+        country: t.country,
+        leagueId: item?.league?.id || null,
+        score,
+      });
+    }
+
+    // 4️⃣ Ordenar por relevancia
+    cleanTeams.sort((a, b) => b.score - a.score);
+
+    // 5️⃣ Guardar / actualizar en BD
+    for (const t of cleanTeams) {
+      await Team.findOneAndUpdate(
+        { teamId: t.teamId },
+        { $set: t },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+    }
+
+    return res.json({
+      status: "success",
+      teams: cleanTeams,
+    });
+  } catch (error) {
+    console.error(
+      "❌ Error buscando equipos:",
+      error?.response?.data || error.message
+    );
+    return res.status(500).json({
+      status: "error",
+      message: "Error al buscar equipos. Intenta de nuevo.",
+    });
+  }
+};
+
+const escapeRegex = (text = "") => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 module.exports = {
   teams,
   getTeam,
   getTeamPlayerStats,
   getTeamPlayerStatsByLeague,
   getSquad,
+  search,
 };

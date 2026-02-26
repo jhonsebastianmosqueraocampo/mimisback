@@ -1,85 +1,127 @@
 const { Schema, model } = require("mongoose");
 
 const userSchema = new Schema({
-  nickName: {
+  /* =========================
+     IDENTIDAD
+  ========================== */
+
+  nickName: { type: String, required: true },
+  email: { type: String, required: true, unique: true },
+  password: String,
+  role: {
     type: String,
-    required: true,
-  },
-  email: {
-    type: String,
-    required: true,
-    unique: true, // buena práctica para evitar duplicados
-  },
-  password: {
-    type: String,
+    default: "user",
   },
   refreshToken: String,
+
   authProvider: {
     type: String,
     enum: ["local", "google"],
     default: "local",
   },
+
   pushToken: String,
 
-  // Puntos actuales (se pueden gastar)
-  points: {
-    type: Number,
-    default: 0,
-  },
+  /* =========================
+     ECONOMÍA (SECUNDARIA)
+  ========================== */
 
-  // Puntos de experiencia (histórico, nunca bajan)
-  xp: {
-    type: Number,
-    default: 0,
-  },
+  points: { type: Number, default: 0 },
 
-  // Nivel del usuario (se puede calcular, pero guardarlo ayuda a consultas rápidas)
+  redeemed: { type: Number, default: 0 },
+
+  pointsHistory: [
+    {
+      action: { type: String },
+      points: { type: Number },
+      date: { type: Date, default: Date.now },
+    },
+  ],
+
+  /* =========================
+     PRESTIGIO
+  ========================== */
+
+  xp: { type: Number, default: 0 },
+
   level: {
     type: String,
-    enum: ["Novato", "Intermedio", "Avanzado", "Experto", "Leyenda"],
+    enum: ["Novato", "Intermedio", "Aficionado", "Leyenda"],
     default: "Novato",
   },
 
-  // Stats de apuestas
+  /* =========================
+     APUESTAS (EXPERIENCIA COMPETITIVA)
+  ========================== */
+
   betsWon: { type: Number, default: 0 },
   betsLost: { type: Number, default: 0 },
 
-  // Puntos ya redimidos (para estadísticas)
-  redeemed: { type: Number, default: 0 },
+  /* =========================
+     COMUNIDAD
+  ========================== */
 
-  // Insignias desbloqueadas
+  communityStats: {
+    officialMatchesPlayed: { type: Number, default: 0 },
+    newsPublished: { type: Number, default: 0 },
+    highlightsUploaded: { type: Number, default: 0 },
+    matchesRated: { type: Number, default: 0 },
+  },
+
+  reputation: { type: Number, default: 100 },
+
   badges: [{ type: String }],
 
-  createdAt: {
-    type: Date,
-    default: Date.now,
-  },
+  /* =========================
+     ADS
+  ========================== */
+
+  limitAdsPerDay: { type: Number, default: 20 },
+  lastAdsReset: { type: Date, default: Date.now },
+
+  createdAt: { type: Date, default: Date.now },
 });
 
 // Método para calcular el nivel basado en xp y logros
 userSchema.methods.calculateLevel = function () {
-  const { xp, betsWon, betsLost, badges } = this;
+  const { xp, communityStats, reputation } = this;
 
   let level = "Novato";
+
   if (xp >= 1000) level = "Intermedio";
-  if (xp >= 2500) level = "Avanzado";
-  if (xp >= 5000) level = "Experto";
-  if (xp >= 10000) level = "Leyenda";
 
-  // Bonus: logros
-  if (badges.includes("🏆 10 apuestas ganadas") && level !== "Leyenda") {
-    level = "Experto";
-  }
+  if (xp >= 5000) level = "Aficionado";
 
-  // Bonus: winrate
-  const total = betsWon + betsLost;
-  const winRate = total > 0 ? (betsWon / total) * 100 : 0;
-  if (winRate > 70 && level === "Intermedio") {
-    level = "Avanzado";
+  if (
+    xp >= 10000 &&
+    communityStats.officialMatchesPlayed >= 1 &&
+    communityStats.newsPublished >= 5 &&
+    communityStats.highlightsUploaded >= 10 &&
+    communityStats.matchesRated >= 1
+  ) {
+    level = "Leyenda";
   }
 
   this.level = level;
   return level;
+};
+
+userSchema.methods.checkAndResetAdsLimit = function () {
+  const now = new Date();
+  const lastReset = new Date(this.lastAdsReset);
+
+  const isNewDay =
+    now.getFullYear() !== lastReset.getFullYear() ||
+    now.getMonth() !== lastReset.getMonth() ||
+    now.getDate() !== lastReset.getDate();
+
+  if (isNewDay) {
+    this.limitAdsPerDay = 20;
+    this.lastAdsReset = now;
+    return true;
+  }
+
+  return false;
 };
 
 module.exports = model("User", userSchema, "users");

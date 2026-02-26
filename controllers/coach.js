@@ -1,31 +1,32 @@
 const axios = require("axios");
 const Coach = require("../models/coach");
 const Team = require("../models/team");
-const { getCurrentSeason } = require("../helper/getCurrentSeason");
+const ApiFootballCall = require("../models/apifootballCals.js");
+const { getCurrentSeason } = require("../helper/getCurrentSeason.js");
 require("dotenv").config();
 
 const API_URL = process.env.API_URL;
 const API_KEY = process.env.API_FOOTBALL_KEY;
 
 const getCoachesByLeague = async (req, res) => {
-  const { leagueId, season } = req.params;
-  if (!leagueId || !season) {
-    return res.json({ status: "error", message: "Missing leagueId or season" });
+  const leagueId = parseInt(req.params.leagueId, 10);
+  let season = parseInt(req.params.season, 10);
+  if (isNaN(leagueId) || isNaN(season)) {
+    return res.json({ status: "error", message: "Invalid parameters" });
+  }
+
+  const userId = req.user.id;
+
+  if (season === 0) {
+    season = await getCurrentSeason({ leagueId: leagueId, userId });
   }
 
   try {
-    const parsedLeagueId = parseInt(leagueId, 10);
-    let parsedSeason = parseInt(season, 10);
-
-    if (parsedSeason === 0) {
-      parsedSeason = await getCurrentSeason({ leagueId: parsedLeagueId });
-    }
-
     const existingCoaches = await Coach.aggregate([
       {
         $match: {
           history: {
-            $elemMatch: { leagueId: parsedLeagueId, season: parsedSeason },
+            $elemMatch: { leagueId, season },
           },
         },
       },
@@ -44,8 +45,8 @@ const getCoachesByLeague = async (req, res) => {
               as: "h",
               cond: {
                 $and: [
-                  { $eq: ["$$h.leagueId", parsedLeagueId] },
-                  { $eq: ["$$h.season", parsedSeason] },
+                  { $eq: ["$$h.leagueId", leagueId] },
+                  { $eq: ["$$h.season", season] },
                 ],
               },
             },
@@ -60,12 +61,48 @@ const getCoachesByLeague = async (req, res) => {
       return res.json({ status: "success", coaches: existingCoaches });
     }
 
-    let teams = await Team.find({ leagueId: parsedLeagueId });
+    let teams = await Team.find({ leagueId });
     if (teams.length === 0) {
-      const teamsRes = await axios.get(`${API_URL}/teams`, {
-        headers: { "x-apisports-key": API_KEY },
-        params: { league: parsedLeagueId, season: parsedSeason },
-      });
+      let teamsRes;
+      const startTeams = Date.now();
+
+      try {
+        teamsRes = await axios.get(`${API_URL}/teams`, {
+          headers: { "x-apisports-key": API_KEY },
+          params: { league: leagueId, season },
+        });
+
+        await ApiFootballCall.create({
+          endpoint: "/teams",
+          method: "GET",
+          source: "manual",
+          user: userId,
+          apiProvider: "api-football",
+          costUnit: 1,
+          statusCode: teamsRes.status,
+          success: true,
+          responseTimeMs: Date.now() - startTeams,
+          remainingRequests:
+            teamsRes.headers["x-ratelimit-requests-remaining"] || null,
+        });
+      } catch (err) {
+        await ApiFootballCall.create({
+          endpoint: "/teams",
+          method: "GET",
+          source: "manual",
+          user: userId,
+          apiProvider: "api-football",
+          costUnit: 1,
+          statusCode: err.response?.status || 500,
+          success: false,
+          responseTimeMs: Date.now() - startTeams,
+          remainingRequests:
+            err.response?.headers?.["x-ratelimit-requests-remaining"] || null,
+          errorMessage: err.message,
+        });
+
+        throw err;
+      }
 
       const apiTeams = teamsRes.data.response || [];
       if (apiTeams.length === 0) {
@@ -80,7 +117,7 @@ const getCoachesByLeague = async (req, res) => {
         name: t.team.name,
         logo: t.team.logo,
         country: t.team.country,
-        leagueId: parsedLeagueId,
+        leagueId: leagueId,
       }));
 
       await Team.insertMany(teamDocs);
@@ -91,18 +128,60 @@ const getCoachesByLeague = async (req, res) => {
       const teamId = team.teamId;
 
       try {
-        const coachRes = await axios.get(`${API_URL}/coachs`, {
-          headers: { "x-apisports-key": API_KEY },
-          params: { team: teamId },
-        });
+        const startCoach = Date.now();
+        let coachRes;
+        let coachList = [];
+        try {
+          coachRes = await axios.get(`${API_URL}/coachs`, {
+            headers: { "x-apisports-key": API_KEY },
+            params: { team: teamId },
+          });
 
-        const coachList = coachRes.data.response || [];
+          await ApiFootballCall.create({
+            endpoint: "/coachs",
+            method: "GET",
+            source: "manual",
+            user: userId,
+            apiProvider: "api-football",
+            costUnit: 1,
+            statusCode: coachRes.status,
+            success: true,
+            responseTimeMs: Date.now() - startCoach,
+            remainingRequests:
+              coachRes.headers["x-ratelimit-requests-remaining"] || null,
+          });
+
+          coachList = coachRes.data.response || [];
+        } catch (err) {
+          await ApiFootballCall.create({
+            endpoint: "/coachs",
+            method: "GET",
+            source: "manual",
+            user: userId,
+            apiProvider: "api-football",
+            costUnit: 1,
+            statusCode: err.response?.status || 500,
+            success: false,
+            responseTimeMs: Date.now() - startCoach,
+            remainingRequests:
+              err.response?.headers?.["x-ratelimit-requests-remaining"] || null,
+            errorMessage: err.message,
+          });
+
+          console.error(
+            "Error fetching coach for team:",
+            teamId,
+            err?.response?.data || err.message,
+          );
+
+          continue;
+        }
 
         const currentCoach = coachList.find((coach) =>
           coach.career?.some(
             (c) =>
-              c.team?.id === teamId && (c.end === null || c.end === undefined)
-          )
+              c.team?.id === teamId && (c.end === null || c.end === undefined),
+          ),
         );
 
         if (!currentCoach) continue;
@@ -113,7 +192,7 @@ const getCoachesByLeague = async (req, res) => {
 
         const entryIndex =
           coachDoc?.history.findIndex(
-            (h) => h.season === parsedSeason && h.team?.id === teamId
+            (h) => h.season === season && h.team?.id === teamId,
           ) ?? -1;
 
         if (!coachDoc) {
@@ -127,9 +206,9 @@ const getCoachesByLeague = async (req, res) => {
             photo: currentCoach.photo,
             history: [
               {
-                season: parsedSeason,
+                season,
                 team: { id: teamId, name: team.name, logo: team.logo },
-                leagueId: parsedLeagueId,
+                leagueId,
                 cachedAt: now,
                 lastUpdated: now,
               },
@@ -146,14 +225,14 @@ const getCoachesByLeague = async (req, res) => {
           if (entryIndex >= 0) {
             coachDoc.history[entryIndex].team.name = team.name;
             coachDoc.history[entryIndex].team.logo = team.logo;
-            coachDoc.history[entryIndex].leagueId = parsedLeagueId;
+            coachDoc.history[entryIndex].leagueId = leagueId;
             coachDoc.history[entryIndex].cachedAt = now;
             coachDoc.history[entryIndex].lastUpdated = now;
           } else {
             coachDoc.history.push({
-              season: parsedSeason,
+              season,
               team: { id: teamId, name: team.name, logo: team.logo },
-              leagueId: parsedLeagueId,
+              leagueId,
               cachedAt: now,
               lastUpdated: now,
             });
@@ -165,7 +244,7 @@ const getCoachesByLeague = async (req, res) => {
         console.error(
           "Error fetching coach for team:",
           teamId,
-          err?.response?.data || err.message
+          err?.response?.data || err.message,
         );
       }
     }
@@ -174,7 +253,7 @@ const getCoachesByLeague = async (req, res) => {
       {
         $match: {
           history: {
-            $elemMatch: { leagueId: parsedLeagueId, season: parsedSeason },
+            $elemMatch: { leagueId, season },
           },
         },
       },
@@ -193,8 +272,8 @@ const getCoachesByLeague = async (req, res) => {
               as: "h",
               cond: {
                 $and: [
-                  { $eq: ["$$h.leagueId", parsedLeagueId] },
-                  { $eq: ["$$h.season", parsedSeason] },
+                  { $eq: ["$$h.leagueId", leagueId] },
+                  { $eq: ["$$h.season", season] },
                 ],
               },
             },
@@ -207,7 +286,6 @@ const getCoachesByLeague = async (req, res) => {
 
     return res.json({ status: "success", coaches });
   } catch (error) {
-    console.error(error);
     return res.json({
       status: "error",
       message: "Failed to fetch or store coaches",
@@ -218,6 +296,7 @@ const getCoachesByLeague = async (req, res) => {
 const getCoachByTeam = async (req, res) => {
   const CACHE_DAYS_LIMIT = 1;
   const teamId = parseInt(req.params.teamId, 10);
+  const userId = req.user?.id || null;
 
   if (isNaN(teamId) || !teamId) {
     return res.status(400).json({ status: "error", message: "Invalid teamId" });
@@ -230,7 +309,7 @@ const getCoachByTeam = async (req, res) => {
 
     if (existingCoach) {
       const historyEntry = existingCoach.history.find(
-        (h) => h.team.id === teamId
+        (h) => h.team.id === teamId,
       );
 
       if (historyEntry) {
@@ -256,17 +335,58 @@ const getCoachByTeam = async (req, res) => {
       }
     }
 
-    const coachRes = await axios.get(`${API_URL}/coachs`, {
-      headers: { "x-apisports-key": API_KEY },
-      params: { team: teamId },
-    });
+    /* ================= API CALL ================= */
+
+    const startCoach = Date.now();
+    let coachRes;
+
+    try {
+      coachRes = await axios.get(`${API_URL}/coachs`, {
+        headers: { "x-apisports-key": API_KEY },
+        params: { team: teamId },
+      });
+
+      await ApiFootballCall.create({
+        endpoint: "/coachs",
+        method: "GET",
+        source: "manual",
+        user: userId,
+        apiProvider: "api-football",
+        costUnit: 1,
+        statusCode: coachRes.status,
+        success: true,
+        responseTimeMs: Date.now() - startCoach,
+        remainingRequests:
+          coachRes.headers["x-ratelimit-requests-remaining"] || null,
+      });
+    } catch (err) {
+      await ApiFootballCall.create({
+        endpoint: "/coachs",
+        method: "GET",
+        source: "manual",
+        user: userId,
+        apiProvider: "api-football",
+        costUnit: 1,
+        statusCode: err.response?.status || 500,
+        success: false,
+        responseTimeMs: Date.now() - startCoach,
+        remainingRequests:
+          err.response?.headers?.["x-ratelimit-requests-remaining"] || null,
+        errorMessage: err.message,
+      });
+
+      return res.status(500).json({
+        status: "error",
+        message: "Failed to fetch coach from API",
+      });
+    }
 
     const coachList = coachRes.data.response || [];
 
     const currentCoach = coachList.find((coach) =>
       coach.career?.some(
-        (c) => c.team?.id === teamId && (c.end === null || c.end === undefined)
-      )
+        (c) => c.team?.id === teamId && (c.end === null || c.end === undefined),
+      ),
     );
 
     if (!currentCoach) {
@@ -312,7 +432,7 @@ const getCoachByTeam = async (req, res) => {
       coachDoc.photo = currentCoach.photo;
 
       const historyIndex = coachDoc.history.findIndex(
-        (h) => h.team.id === teamId
+        (h) => h.team.id === teamId,
       );
 
       if (historyIndex >= 0) {
@@ -352,10 +472,6 @@ const getCoachByTeam = async (req, res) => {
 
     return res.json({ status: "success", coach: coachResponse });
   } catch (error) {
-    console.error(
-      "getCoachByTeam error:",
-      error?.response?.data || error.message
-    );
     return res.json({
       status: "error",
       message: "Failed to fetch or store coach",
@@ -365,20 +481,24 @@ const getCoachByTeam = async (req, res) => {
 
 const getCoachInfo = async (req, res) => {
   const coachId = parseInt(req.params.coachId, 10);
-  const season = parseInt(req.params.season, 10);
+  let season = parseInt(req.params.season, 10);
 
-  if (!Number.isFinite(coachId)) {
+  if (isNaN(coachId) || isNaN(season)) {
     return res
       .status(400)
-      .json({ status: "error", message: "Invalid coachId" });
+      .json({ status: "error", message: "Invalid coachId or season" });
   }
-  if (!Number.isFinite(season)) {
-    return res.status(400).json({ status: "error", message: "Invalid season" });
+
+  const userId = req.user.id;
+
+  if (season === 0) {
+    season = await getCurrentSeason({ leagueId: leagueId, userId });
   }
 
   try {
     let coachDoc = await Coach.findOne({ coachId });
     const now = new Date();
+
     const seasonData = coachDoc?.history?.find((h) => h.season === season);
     const needUpdate =
       !seasonData ||
@@ -388,10 +508,50 @@ const getCoachInfo = async (req, res) => {
       return res.json({ status: "success", coach: coachDoc });
     }
 
-    const coachRes = await axios.get(`${API_URL}/coachs`, {
-      headers: { "x-apisports-key": API_KEY },
-      params: { id: coachId },
-    });
+    // 🔹 1. Obtener info del coach
+    const startCoach = Date.now();
+    let coachRes;
+
+    try {
+      coachRes = await axios.get(`${API_URL}/coachs`, {
+        headers: { "x-apisports-key": API_KEY },
+        params: { id: coachId },
+      });
+
+      await ApiFootballCall.create({
+        endpoint: "/coachs",
+        method: "GET",
+        source: "manual",
+        user: userId,
+        apiProvider: "api-football",
+        costUnit: 1,
+        statusCode: coachRes.status,
+        success: true,
+        responseTimeMs: Date.now() - startCoach,
+        remainingRequests:
+          coachRes.headers["x-ratelimit-requests-remaining"] || null,
+      });
+    } catch (err) {
+      await ApiFootballCall.create({
+        endpoint: "/coachs",
+        method: "GET",
+        source: "manual",
+        user: userId,
+        apiProvider: "api-football",
+        costUnit: 1,
+        statusCode: err.response?.status || 500,
+        success: false,
+        responseTimeMs: Date.now() - startCoach,
+        remainingRequests:
+          err.response?.headers?.["x-ratelimit-requests-remaining"] || null,
+        errorMessage: err.message,
+      });
+
+      return res.status(500).json({
+        status: "error",
+        message: "Failed to fetch coach from API",
+      });
+    }
 
     const apiCoach = coachRes.data?.response?.[0];
     if (!apiCoach) {
@@ -400,7 +560,9 @@ const getCoachInfo = async (req, res) => {
         .json({ status: "error", message: "Entrenador no encontrado" });
     }
 
-    const teamId = apiCoach.team?.id;
+    const teamId = apiCoach.team?.id || null;
+
+    // 🔹 Si no tiene equipo esta temporada
     if (!teamId) {
       const emptySeasonBlock = {
         season,
@@ -423,16 +585,6 @@ const getCoachInfo = async (req, res) => {
         const idx = coachDoc.history.findIndex((h) => h.season === season);
         if (idx >= 0) coachDoc.history[idx] = emptySeasonBlock;
         else coachDoc.history.push(emptySeasonBlock);
-
-        coachDoc.set({
-          name: apiCoach.name,
-          firstname: apiCoach.firstname,
-          lastname: apiCoach.lastname,
-          age: apiCoach.age,
-          nationality: apiCoach.nationality,
-          photo: apiCoach.photo,
-        });
-        await coachDoc.save();
       } else {
         coachDoc = await Coach.create({
           coachId: apiCoach.id,
@@ -446,21 +598,58 @@ const getCoachInfo = async (req, res) => {
         });
       }
 
+      await coachDoc.save();
       return res.json({ status: "success", coach: coachDoc });
     }
 
-    const tenure = (apiCoach.career || []).find(
-      (c) => c.team?.id === teamId && (c.end === null || c.end === undefined)
-    );
-    const tenureStart = tenure?.start ? new Date(tenure.start) : null;
+    // 🔹 3. Obtener fixtures del equipo en la temporada
+    const startFixtures = Date.now();
+    let fixturesRes;
 
-    const fixturesRes = await axios.get(`${API_URL}/fixtures`, {
-      headers: { "x-apisports-key": API_KEY },
-      params: { team: teamId, season },
-    });
+    try {
+      fixturesRes = await axios.get(`${API_URL}/fixtures`, {
+        headers: { "x-apisports-key": API_KEY },
+        params: { team: teamId, season },
+      });
+
+      await ApiFootballCall.create({
+        endpoint: "/fixtures",
+        method: "GET",
+        source: "manual",
+        user: userId,
+        apiProvider: "api-football",
+        costUnit: 1,
+        statusCode: fixturesRes.status,
+        success: true,
+        responseTimeMs: Date.now() - startFixtures,
+        remainingRequests:
+          fixturesRes.headers["x-ratelimit-requests-remaining"] || null,
+      });
+    } catch (err) {
+      await ApiFootballCall.create({
+        endpoint: "/fixtures",
+        method: "GET",
+        source: "manual",
+        user: userId,
+        apiProvider: "api-football",
+        costUnit: 1,
+        statusCode: err.response?.status || 500,
+        success: false,
+        responseTimeMs: Date.now() - startFixtures,
+        remainingRequests:
+          err.response?.headers?.["x-ratelimit-requests-remaining"] || null,
+        errorMessage: err.message,
+      });
+
+      return res.status(500).json({
+        status: "error",
+        message: "Failed to fetch fixtures from API",
+      });
+    }
 
     const allFixtures = fixturesRes.data?.response || [];
 
+    // 🔹 4. Inicializar estadísticas
     const stats = {
       played: 0,
       wins: 0,
@@ -471,34 +660,14 @@ const getCoachInfo = async (req, res) => {
       winRate: "0%",
     };
 
+    // 🔹 5. Calcular stats CORRECTAMENTE
     for (const fx of allFixtures) {
-      const fixtureId = fx.fixture?.id;
-      if (!fixtureId) continue;
-
-      if (tenureStart) {
-        const matchDate = new Date(fx.fixture?.date);
-        if (matchDate < tenureStart) continue;
-      }
-
-      let coachedThisMatch = false;
-      try {
-        const lineupsRes = await axios.get(`${API_URL}/fixtures/lineups`, {
-          headers: { "x-apisports-key": API_KEY },
-          params: { fixture: fixtureId, team: teamId },
-        });
-
-        const lineup = lineupsRes.data?.response?.[0];
-        if (lineup?.coach?.id === coachId) {
-          coachedThisMatch = true;
-        }
-      } catch (e) {
-        continue;
-      }
-
-      if (!coachedThisMatch) continue;
+      // ✅ solo partidos finalizados
+      if (fx.fixture.status?.short !== "FT") continue;
 
       const g = fx.goals;
-      if (g == null) continue;
+      if (!g) continue;
+
       stats.played++;
 
       const isHome = fx.teams?.home?.id === teamId;
@@ -508,8 +677,8 @@ const getCoachInfo = async (req, res) => {
       stats.goalsFor += gf ?? 0;
       stats.goalsAgainst += ga ?? 0;
 
-      if ((gf ?? 0) > (ga ?? 0)) stats.wins++;
-      else if ((gf ?? 0) < (ga ?? 0)) stats.losses++;
+      if (gf > ga) stats.wins++;
+      else if (gf < ga) stats.losses++;
       else stats.draws++;
     }
 
@@ -517,6 +686,7 @@ const getCoachInfo = async (req, res) => {
       stats.winRate = ((stats.wins / stats.played) * 100).toFixed(2) + "%";
     }
 
+    // 🔹 6. Guardar bloque de temporada
     const seasonBlock = {
       season,
       team: {
@@ -543,8 +713,6 @@ const getCoachInfo = async (req, res) => {
         nationality: apiCoach.nationality,
         photo: apiCoach.photo,
       });
-
-      await coachDoc.save();
     } else {
       coachDoc = await Coach.create({
         coachId: apiCoach.id,
@@ -558,6 +726,8 @@ const getCoachInfo = async (req, res) => {
       });
     }
 
+    await coachDoc.save();
+
     return res.json({ status: "success", coach: coachDoc });
   } catch (error) {
     return res.json({
@@ -567,8 +737,199 @@ const getCoachInfo = async (req, res) => {
   }
 };
 
+const search = async (req, res) => {
+  try {
+    const { name } = req.params;
+    const userId = req.user?.id || null;
+    if (!name || !name.trim()) {
+      return res.status(400).json({
+        status: "error",
+        message: "Nombre requerido",
+      });
+    }
+
+    const queryName = name.trim().toLowerCase();
+    const regex = new RegExp(escapeRegex(queryName), "i");
+    const now = new Date();
+    const TTL_HOURS = 24;
+
+    // 1️⃣ Buscar entrenadores en BD
+    const localCoaches = await Coach.find({
+      $or: [{ name: regex }, { firstname: regex }, { lastname: regex }],
+    })
+      .select(
+        "coachId name firstname lastname age nationality photo team updatedAt cachedAt",
+      )
+      .lean();
+
+    if (localCoaches.length) {
+      // 🧠 Calcular relevancia (exacta y parcial)
+      const scoredCoaches = localCoaches.map((c) => {
+        const nameLower = c.name?.toLowerCase() || "";
+        const firstLower = c.firstname?.toLowerCase() || "";
+        const lastLower = c.lastname?.toLowerCase() || "";
+
+        let score = 0;
+        // Exact match
+        if (nameLower === queryName) score += 10;
+        if (firstLower === queryName) score += 8;
+        if (lastLower === queryName) score += 8;
+
+        // Coincidencias parciales o nombres compuestos
+        if (firstLower.split(" ").includes(queryName)) score += 6;
+        if (nameLower.split(" ").includes(queryName)) score += 6;
+        if (lastLower.split(" ").includes(queryName)) score += 6;
+        if (nameLower.includes(queryName)) score += 3;
+        if (firstLower.includes(queryName)) score += 3;
+        if (lastLower.includes(queryName)) score += 3;
+
+        return { ...c, score };
+      });
+
+      // 🔹 Ordenar por relevancia
+      scoredCoaches.sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        return new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0);
+      });
+
+      // 🔹 Verificar si los datos son recientes (<24h)
+      const lastUpdated = Math.max(
+        ...scoredCoaches.map((c) =>
+          new Date(c.cachedAt || c.updatedAt || 0).getTime(),
+        ),
+      );
+      const hours = (now.getTime() - lastUpdated) / (1000 * 60 * 60);
+
+      if (hours < TTL_HOURS) {
+        return res.json({
+          status: "success",
+          coaches: scoredCoaches,
+        });
+      }
+    }
+
+    // 2️⃣ Consultar API-Football
+    const apiUrl = `${API_URL}/coachs?search=${encodeURIComponent(queryName)}`;
+    const startSearch = Date.now();
+    let response;
+
+    try {
+      response = await axios.get(apiUrl, {
+        headers: { "x-apisports-key": API_KEY },
+      });
+
+      await ApiFootballCall.create({
+        endpoint: "/coachs?search",
+        method: "GET",
+        source: "manual",
+        user: userId,
+        apiProvider: "api-football",
+        costUnit: 1,
+        statusCode: response.status,
+        success: true,
+        responseTimeMs: Date.now() - startSearch,
+        remainingRequests:
+          response.headers["x-ratelimit-requests-remaining"] || null,
+      });
+    } catch (err) {
+      await ApiFootballCall.create({
+        endpoint: "/coachs?search",
+        method: "GET",
+        source: "manual",
+        user: userId,
+        apiProvider: "api-football",
+        costUnit: 1,
+        statusCode: err.response?.status || 500,
+        success: false,
+        responseTimeMs: Date.now() - startSearch,
+        remainingRequests:
+          err.response?.headers?.["x-ratelimit-requests-remaining"] || null,
+        errorMessage: err.message,
+      });
+
+      return res.status(500).json({
+        status: "error",
+        message: "Error al consultar API-Football",
+      });
+    }
+
+    let apiCoaches = Array.isArray(response?.data?.response)
+      ? response.data.response
+      : [];
+
+    if (!apiCoaches.length) {
+      return res.json({
+        status: "error",
+        message: `No se encontraron entrenadores para "${queryName}"`,
+      });
+    }
+
+    // 3️⃣ Procesar resultados de la API con el mismo sistema de score
+    const cleanCoaches = [];
+    const seenIds = new Set();
+
+    for (const c of apiCoaches) {
+      if (!c?.id || !c?.name || seenIds.has(c.id)) continue;
+      seenIds.add(c.id);
+
+      const nameLower = c.name?.toLowerCase() || "";
+      const firstLower = c.firstname?.toLowerCase() || "";
+      const lastLower = c.lastname?.toLowerCase() || "";
+
+      let score = 0;
+      if (nameLower === queryName) score += 10;
+      if (firstLower === queryName) score += 8;
+      if (lastLower === queryName) score += 8;
+      if (firstLower.split(" ").includes(queryName)) score += 6;
+      if (nameLower.split(" ").includes(queryName)) score += 6;
+      if (lastLower.split(" ").includes(queryName)) score += 6;
+      if (nameLower.includes(queryName)) score += 3;
+      if (firstLower.includes(queryName)) score += 3;
+      if (lastLower.includes(queryName)) score += 3;
+
+      cleanCoaches.push({
+        coachId: c.id,
+        name: c.name,
+        firstname: c.firstname,
+        lastname: c.lastname,
+        age: c.age,
+        nationality: c.nationality,
+        photo: c.photo,
+        team: c.team || null,
+        cachedAt: now,
+        score,
+      });
+    }
+
+    // 4️⃣ Ordenar por relevancia
+    cleanCoaches.sort((a, b) => b.score - a.score);
+
+    // 5️⃣ Guardar / actualizar en BD
+    for (const c of cleanCoaches) {
+      await Coach.findOneAndUpdate(
+        { coachId: c.coachId },
+        { $set: c },
+        { upsert: true, new: true, setDefaultsOnInsert: true },
+      );
+    }
+
+    return res.json({
+      status: "success",
+      coaches: cleanCoaches,
+    });
+  } catch (error) {
+    return res.json({
+      status: "error",
+      message: "Error al buscar entrenadores. Intenta de nuevo.",
+    });
+  }
+};
+
+const escapeRegex = (text = "") => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 module.exports = {
   getCoachesByLeague,
   getCoachByTeam,
   getCoachInfo,
+  search,
 };

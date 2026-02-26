@@ -2,15 +2,14 @@
 const axios = require("axios");
 const Fixture = require("../models/fixture");
 const LiveMatch = require("../models/LiveMatch");
-const {
-  PRIORITY_COUNTRIES,
-  PRIORITY_TOURNAMENTS,
-} = require("../data/leaguesPriority");
+const { isPriorityCompetition } = require("../data/leaguesPriority");
 const cron = require("node-cron");
 require("dotenv").config();
 
 const API_KEY = process.env.API_FOOTBALL_KEY;
 const API_URL = process.env.API_URL;
+
+const MIN_REFRESH_MS = 75 * 1000; // poquito mas de 1 min
 
 // 🚀 Función principal: actualiza partidos en vivo y finalizados de ligas prioritarias
 async function runUpdate() {
@@ -21,61 +20,55 @@ async function runUpdate() {
     const endOfDay = new Date();
     endOfDay.setHours(23, 59, 59, 999);
 
+    // 👉 solo fixtures del día
     const fixturesToday = await Fixture.find({
       date: { $gte: startOfDay, $lte: endOfDay },
     }).lean();
 
-    const now = new Date();
+    const now = Date.now();
     let updated = 0;
     let apiCalls = 0;
-    console.log(fixturesToday.length)
 
     for (const fixture of fixturesToday) {
-      const fixtureDate = new Date(fixture.date);
+      const leagueId = fixture.leagueId;
+      // console.log(leagueId)
+      if (!isPriorityCompetition(leagueId)) continue;
+      const fixtureDate = new Date(fixture.date).getTime();
+      if (fixtureDate > now) continue; // aún no empieza
 
-      // Filtramos por ligas prioritarias
-      const isPriority =
-        PRIORITY_COUNTRIES.includes(fixture.league?.country) ||
-        PRIORITY_TOURNAMENTS.some((name) =>
-          fixture.league?.name.toLowerCase().includes(name.toLowerCase())
-        );
-      if (!isPriority) continue;
-
-      // --- 1. Próximos ---
-      if (fixtureDate > now) continue;
-      // --- 2. Ya empezó ---
       const liveMatch = await LiveMatch.findOne({
         fixtureId: fixture.fixtureId,
-      });
+      }).lean();
 
-      if (!liveMatch) {
-        // Insert inicial
-        const result = await fetchAndUpsertLiveMatch(fixture.fixtureId);
-        if (result.ok) {
-          updated++;
-          apiCalls += result.apiCalls;
-        }
-      } else {
-        const statusShort = liveMatch.status?.short;
+      // ⛔ ya terminó
+      if (liveMatch?.status?.short && ["FT", "AET", "PEN"].includes(liveMatch.status.short)) {
+        continue;
+      }
 
-        if (["FT", "AET", "PEN"].includes(statusShort)) {
-          continue; // Finalizado, no hacemos nada
-        }
+      // ⏱️ throttle
+      if (
+        liveMatch?.lastUpdated &&
+        now - new Date(liveMatch.lastUpdated).getTime() < MIN_REFRESH_MS
+      ) {
+        continue;
+      }
 
-        // Sigue en vivo → refrescamos
-        const result = await fetchAndUpsertLiveMatch(fixture.fixtureId);
-        if (result.ok) {
-          updated++;
-          apiCalls += result.apiCalls;
-        }
+      const result = await fetchAndUpsertLiveMatch(
+        fixture.fixtureId,
+        liveMatch
+      );
+
+      if (result.ok) {
+        updated++;
+        apiCalls += result.apiCalls;
       }
     }
 
     console.log(
-      `✅ Cron ejecutado ${new Date().toISOString()} | Partidos actualizados: ${updated} | Requests enviados: ${apiCalls}`
+      `✅ Cron ${new Date().toISOString()} | Updated: ${updated} | API calls: ${apiCalls}`
     );
   } catch (error) {
-    console.error("❌ Error en runUpdate:", error.message);
+    console.error("❌ runUpdate error:", error.message);
   }
 }
 

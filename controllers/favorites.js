@@ -264,7 +264,6 @@ const getFavoritesStats = async (req, res) => {
   }
 };
 
-
 module.exports = {
   saveFavorites,
   getFavorites,

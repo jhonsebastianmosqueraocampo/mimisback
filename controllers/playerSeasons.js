@@ -57,8 +57,7 @@ const getPlayerSeasons = async (req, res) => {
       seasons: seasonsDesc,
     });
   } catch (error) {
-    console.error("❌ Error en getPlayerSeasons:", error.message);
-    return res.status(500).json({
+    return res.json({
       status: "error",
       message: "Error obteniendo temporadas del jugador",
     });

@@ -4,7 +4,7 @@ require("dotenv").config();
 
 const SCOREBAT_API_KEY = process.env.SCOREBAT_API_KEY;
 
-const API_URL = `https://www.scorebat.com/video-api/v3/feed/?token=${SCOREBAT_API_KEY}`;
+const API_URL = process.env.SCOREBAT_API_URL;
 const UPDATE_INTERVAL_HOURS = 1;
 
 // =========================
@@ -13,17 +13,15 @@ const UPDATE_INTERVAL_HOURS = 1;
 const getVideosByTeam = async (req, res) => {
   try {
     const { teamName } = req.params;
-    console.log(SCOREBAT_API_KEY)
     let record = await ScorebatVideo.findOne({ queryType: "team", queryValue: teamName.toLowerCase() });
 
-    const expired =
-      !record ||
-      (Date.now() - new Date(record.lastUpdated).getTime()) / (1000 * 60 * 60) >= UPDATE_INTERVAL_HOURS;
+    const expired = !record || (Date.now() - new Date(record.lastUpdated).getTime()) / (1000 * 60 * 60) >= UPDATE_INTERVAL_HOURS;
 
     if (expired) {
-      console.log("⏳ Consultando ScoreBat API (team):", teamName);
-      const { data } = await axios.get(API_URL);
-      const raw = data?.response?.v || [];
+      const { data } = await axios.get(`${API_URL}/team/${teamName}/?token=${SCOREBAT_API_KEY}`);
+      const raw = data.response || [];
+      console.log(data)
+      console.log(row)
 
       const filtered = raw.filter(
         (v) =>
@@ -62,10 +60,9 @@ const getVideosByTeam = async (req, res) => {
       await record.save();
     }
 
-    res.json({ success: true, videos: record.videos });
+    return res.json({ status: 'success', videos: record.videos });
   } catch (error) {
-    console.error("❌ Error getVideosByTeam:", error.message);
-    res.status(500).json({ success: false, message: "Error interno del servidor" });
+    return res.json({ status: 'error', message: "Error interno del servidor" });
   }
 };
 

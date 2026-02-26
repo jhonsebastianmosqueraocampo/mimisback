@@ -1,5 +1,6 @@
 const axios = require("axios");
 const FriendlyStanding = require("../models/FriendlyStanding");
+const ApiFootballCall = require("../models/apifootballCals.js");
 const { getCurrentSeason } = require("../helper/getCurrentSeason.js");
 require("dotenv").config();
 
@@ -13,20 +14,22 @@ const POSTPONED_SHORT = ["PST", "SUSP", "INT"];
 const getFriendlyStandings = async (req, res) => {
   const teamId = parseInt(req.params.teamId, 10);
   let season = parseInt(req.params.season, 10);
+  const userId = req.user.id;
 
   if (!teamId || isNaN(teamId)) {
     return res.status(400).json({ status: "error", message: "Invalid teamId" });
   }
+
   if (!season || isNaN(season)) {
     return res.status(400).json({ status: "error", message: "Invalid season" });
   }
 
   if (season === 0) {
-    season = await getCurrentSeason({ teamId: teamId });
+    season = await getCurrentSeason({ teamId, userId });
   }
 
   try {
-    // 1️⃣ Buscar en BD los amistosos existentes
+    // 1️⃣ Buscar en BD
     const existingFixtures = await FriendlyStanding.find({
       $or: [{ "teams.home.id": teamId }, { "teams.away.id": teamId }],
       "league.season": season,
@@ -38,26 +41,24 @@ const getFriendlyStandings = async (req, res) => {
       ? dayjs(existingFixtures[0].lastUpdate)
       : null;
 
-    // 2️⃣ Determinar estado de actividad
     const hasLive = existingFixtures.some((f) =>
       LIVE_SHORT.includes(f.status?.short)
     );
+
     const hasToday = existingFixtures.some((f) =>
       dayjs(f.date).isSame(now, "day")
     );
 
-    // 3️⃣ Calcular cada cuánto actualizar
     let maxAgeHours = 12;
-    if (hasLive) maxAgeHours = 0.1; // cada 6 minutos
-    else if (hasToday) maxAgeHours = 2; // partidos del día
-    else maxAgeHours = 12; // sin actividad
+    if (hasLive) maxAgeHours = 0.1;
+    else if (hasToday) maxAgeHours = 2;
+    else maxAgeHours = 12;
 
     const shouldUpdate =
       !existingFixtures.length ||
       !lastUpdate ||
       now.diff(lastUpdate, "hour") >= maxAgeHours;
 
-    // 4️⃣ Si no requiere actualización, devolver BD
     if (!shouldUpdate && existingFixtures.length > 0) {
       return res.json({
         status: "success",
@@ -66,23 +67,66 @@ const getFriendlyStandings = async (req, res) => {
       });
     }
 
-    // 5️⃣ Obtener desde la API
-    const { data } = await axios.get(`${API_URL}/fixtures`, {
-      headers: { "x-apisports-key": API_KEY },
-      params: {
-        team: teamId,
-        season,
-      },
-    });
+    /* ===========================
+       🔹 LLAMADO A API-FOOTBALL
+    ============================ */
 
-    const fixtures = data.response || [];
+    const start = Date.now();
+    let response;
+
+    try {
+      response = await axios.get(`${API_URL}/fixtures`, {
+        headers: { "x-apisports-key": API_KEY },
+        params: {
+          team: teamId,
+          season,
+        },
+      });
+
+      await ApiFootballCall.create({
+        endpoint: "/fixtures",
+        method: "GET",
+        source: "manual",
+        user: userId || null,
+        apiProvider: "api-football",
+        costUnit: 1,
+        statusCode: response.status,
+        success: true,
+        responseTimeMs: Date.now() - start,
+        remainingRequests:
+          response.headers?.["x-ratelimit-requests-remaining"] || null,
+      });
+
+    } catch (err) {
+      await ApiFootballCall.create({
+        endpoint: "/fixtures",
+        method: "GET",
+        source: "manual",
+        user: userId || null,
+        apiProvider: "api-football",
+        costUnit: 1,
+        statusCode: err.response?.status || 500,
+        success: false,
+        responseTimeMs: Date.now() - start,
+        remainingRequests:
+          err.response?.headers?.["x-ratelimit-requests-remaining"] || null,
+        errorMessage: err.message,
+      });
+
+      return res.status(500).json({
+        status: "error",
+        message: "Error al consultar amistosos en API",
+      });
+    }
+
+    const fixtures = response.data?.response || [];
 
     // 6️⃣ Filtrar amistosos
     const friendlyFixtures = fixtures.filter((fixture) =>
       fixture.league.name.toLowerCase().includes("friendlies")
     );
 
-    // 7️⃣ Guardar/actualizar en DB de forma secuencial
+    // 7️⃣ Guardar/actualizar en DB
     for (const fixture of friendlyFixtures) {
       const { fixture: f, league, teams, goals, score } = fixture;
 
@@ -128,11 +172,9 @@ const getFriendlyStandings = async (req, res) => {
         { upsert: true, new: true, setDefaultsOnInsert: true }
       );
 
-      // pequeño delay opcional (para seguridad frente al rate limit)
       await new Promise((r) => setTimeout(r, 250));
     }
 
-    // 8️⃣ Consultar de nuevo tras actualizar
     const updatedFixtures = await FriendlyStanding.find({
       $or: [{ "teams.home.id": teamId }, { "teams.away.id": teamId }],
       "league.season": season,
@@ -144,8 +186,8 @@ const getFriendlyStandings = async (req, res) => {
       updated: true,
       standings: updatedFixtures,
     });
+
   } catch (error) {
-    console.error("❌ getFriendlyStandings error:", error.message);
     res.status(500).json({
       status: "error",
       message: "Error al obtener amistosos. Intenta nuevamente.",
