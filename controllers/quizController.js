@@ -33,34 +33,18 @@ const upsertQuizDay = async (req, res) => {
     }
 
     // Reconstruir preguntas desde FormData
-    const questions = [];
+    let questions = [];
 
-    Object.keys(req.body).forEach((key) => {
-      const match = key.match(/^questions\[(\d+)\]\[(.+)\]$/);
+    if (req.body.questions) {
+      questions = JSON.parse(req.body.questions);
+    }
 
-      if (match) {
-        const index = Number(match[1]);
-        const field = match[2];
-
-        if (!questions[index]) {
-          questions[index] = {
-            questionText: "",
-            options: [],
-            correctIndex: 0,
-          };
-        }
-
-        if (field.startsWith("options")) {
-          const optMatch = field.match(/options\]\[(\d+)\]/);
-          if (optMatch) {
-            const optIndex = Number(optMatch[1]);
-            questions[index].options[optIndex] = req.body[key];
-          }
-        } else {
-          questions[index][field] = req.body[key];
-        }
-      }
-    });
+    if (questions.length > 5) {
+      return res.status(400).json({
+        status: "error",
+        message: "Máximo 5 preguntas",
+      });
+    }
 
     if (questions.length > 5) {
       return res.status(400).json({
@@ -74,7 +58,7 @@ const upsertQuizDay = async (req, res) => {
     // 🔥 Subir videos a R2
     const processedQuestions = await Promise.all(
       questions.map(async (q, index) => {
-        const file = files[index];
+        const file = files.find((f) => f.fieldname === `video_${index}`);
 
         let videoUrl = null;
 
@@ -89,11 +73,13 @@ const upsertQuizDay = async (req, res) => {
 
         return {
           questionText: q.questionText,
-          options: q.options.map((o) => ({ label: o })),
+          options: q.options
+            .filter((o) => o && o.trim() !== "")
+            .map((o) => ({ label: o })),
           correctIndex: Number(q.correctIndex),
           videoUrl,
         };
-      })
+      }),
     );
 
     const doc = await QuizDay.findOneAndUpdate(
@@ -104,7 +90,7 @@ const upsertQuizDay = async (req, res) => {
         isPublished: isPublished === "true",
         createdBy: req.user.id,
       },
-      { new: true, upsert: true }
+      { new: true, upsert: true },
     );
 
     return res.json({
@@ -112,7 +98,6 @@ const upsertQuizDay = async (req, res) => {
       quizDay: doc,
     });
   } catch (error) {
-    console.error(error);
     return res.status(500).json({
       status: "error",
       message: "Server error",
@@ -126,13 +111,13 @@ const upsertQuizDay = async (req, res) => {
 const getTodayQuiz = async (req, res) => {
   try {
     const dateKey = req.query.dateKey || todayKey();
-
     const quizDay = await QuizDay.findOne({ dateKey, isPublished: true });
+
     if (!quizDay) {
       return res.json({
         status: "success",
+        quizStatus: "no_quiz",
         dateKey,
-        status: "no_quiz",
         message: "No hay preguntas para hoy.",
       });
     }
@@ -145,25 +130,27 @@ const getTodayQuiz = async (req, res) => {
 
     const total = quizDay.questions.length;
     const answeredCount = progress.answers.length;
-    const nextIndex = answeredCount; // lineal
+    const nextIndex = answeredCount;
     const completed = answeredCount >= total && total > 0;
 
     const nextQuestion = completed ? null : quizDay.questions[nextIndex];
 
     return res.json({
       status: "success",
+      quizStatus: completed ? "completed" : "in_progress",
       dateKey,
-      status: completed ? "completed" : "in_progress",
       total,
       answeredCount,
       score: progress.score,
-      nextIndex, // 0-based
+      nextIndex,
       nextQuestion: nextQuestion ? sanitizeQuestionForUser(nextQuestion) : null,
     });
   } catch (e) {
-    return res
-      .status(500)
-      .json({ status: "error", message: "Server error", error: String(e) });
+    return res.status(500).json({
+      status: "error",
+      message: "Server error",
+      error: String(e),
+    });
   }
 };
 
@@ -267,7 +254,7 @@ const answerQuestion = async (req, res) => {
     const nextQuestion = completed ? null : quizDay.questions[nextIndex];
 
     return res.json({
-      status: "success",
+      statusBack: "success",
       isCorrect,
       score: progress.score,
       answeredCount: progress.answers.length,
@@ -278,6 +265,103 @@ const answerQuestion = async (req, res) => {
     });
   } catch (e) {
     return res.status(500).json({ message: "Server error", error: String(e) });
+  }
+};
+
+const claimQuizReward = async (req, res) => {
+  try {
+    const { dateKey } = req.body;
+
+    if (!dateKey) {
+      return res.status(400).json({
+        status: "error",
+        message: "dateKey requerido",
+      });
+    }
+
+    const progress = await UserQuizProgress.findOne({
+      user: req.user.id,
+      dateKey,
+    });
+
+    if (!progress) {
+      return res.status(400).json({
+        status: "error",
+        message: "Progreso no encontrado",
+      });
+    }
+
+    if (progress.rewardClaimed) {
+      return res.json({
+        status: "success",
+        alreadyClaimed: true,
+      });
+    }
+
+    // verificar que completó TODO el quiz
+    const quizDay = await QuizDay.findOne({ dateKey });
+
+    if (!quizDay || progress.answers.length < quizDay.questions.length) {
+      return res.status(400).json({
+        status: "error",
+        message: "Quiz no completado",
+      });
+    }
+
+    // Marcar como reclamado
+    progress.rewardClaimed = true;
+    await progress.save();
+
+    // Sumar puntos
+    await User.findByIdAndUpdate(req.user.id, {
+      $inc: { points: progress.score },
+    });
+
+    return res.json({
+      status: "success",
+      alreadyClaimed: false,
+      pointsEarned: progress.score,
+    });
+  } catch (err) {
+    return res.status(500).json({
+      status: "error",
+      message: "Server error",
+    });
+  }
+};
+
+const validateQuizReward = async (req, res) => {
+  try {
+    const { dateKey } = req.query;
+
+    if (!dateKey) {
+      return res.status(400).json({
+        status: "error",
+        message: "dateKey requerido",
+      });
+    }
+
+    const progress = await UserQuizProgress.findOne({
+      user: req.user.id,
+      dateKey,
+    });
+
+    if (!progress) {
+      return res.json({
+        status: "success",
+        alreadyClaimed: false,
+      });
+    }
+
+    return res.json({
+      status: "success",
+      alreadyClaimed: progress.rewardClaimed || false,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      status: "error",
+      message: "Server error",
+    });
   }
 };
 
@@ -310,4 +394,6 @@ module.exports = {
   getTodayQuiz,
   answerQuestion,
   getVideosForDay,
+  claimQuizReward,
+  validateQuizReward
 };

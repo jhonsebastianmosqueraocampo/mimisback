@@ -38,9 +38,7 @@ const getFunFacts = async (req, res) => {
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
-      .select(text)
       .lean();
-
     return res.json({
       status: "success",
       facts,

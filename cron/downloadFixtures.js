@@ -57,8 +57,8 @@ async function logApiError(endpoint, err, startMs) {
 }
 
 const downloadFixtures = async () => {
-  cron.schedule("0 3 * * *", async () => {
-    // cron.schedule("* * * * *", async () => { // en pro, usar esta
+  cron.schedule("0 3 * * *", async () => {// en pro, usar esta
+    // cron.schedule("* * * * *", async () => { 
 
     const today = new Date().toISOString().split("T")[0];
     const start = Date.now();

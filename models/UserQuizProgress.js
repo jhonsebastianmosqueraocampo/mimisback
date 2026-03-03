@@ -7,18 +7,27 @@ const AnswerSchema = new Schema(
     isCorrect: { type: Boolean, required: true },
     answeredAt: { type: Date, default: Date.now },
   },
-  { _id: false }
+  { _id: false },
 );
 
 const UserQuizProgressSchema = new Schema(
   {
-    user: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
+    user: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      index: true,
+    },
     dateKey: { type: String, required: true, index: true }, // "YYYY-MM-DD"
     answers: { type: [AnswerSchema], default: [] },
     score: { type: Number, default: 0 },
     completedAt: { type: Date, default: null },
+    rewardClaimed: {
+      type: Boolean,
+      default: false,
+    },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 // Un progreso por usuario por día

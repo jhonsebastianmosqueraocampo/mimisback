@@ -89,7 +89,7 @@ const startServer = async () => {
     await initCountries();
     await updateFixtures();
     await startNewsCleanup();
-    // await startLiveMatchesCron();
+    await startLiveMatchesCron();
     // await startNotificationFixtures();
     await closePendingBets()
     

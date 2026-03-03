@@ -70,7 +70,6 @@ const seasonTeamAnalysis = async (req, res) => {
 
     return res.json({ status: "success", analysis: parsed });
   } catch (error) {
-    console.error("Season Analysis Error:", error);
     return res.status(500).json({
       status: "error",
       message: "Internal server error",

@@ -295,16 +295,13 @@ const getUserFromRefreshToken = async (req, res) => {
     });
   try {
     const payload = jwt.refresh(token);
-    const user = await User.findById(payload.id);
+    // const user = await User.findById(payload.id).select("-password -refreshToken -authProvider"); // revisar por qué falla
+    const user = await User.findById(payload.id).select("-password");
     if (!user || user.refreshToken !== token)
       return res.json({ status: "error", message: "Login" });
     const access_token = jwt.generateAccessToken(user);
     res.json({
-      user: {
-        id: user._id,
-        nickName: user.nickName,
-        email: user.email,
-      },
+      user,
       access_token,
     });
   } catch (error) {

@@ -13,7 +13,7 @@ router.get("/leagues", middleware.auth, leagueController.leagues);
 router.get("/getLeague/:id", middleware.auth, leagueController.leagueById);
 router.get("/leaguesfromcountry/:country", middleware.auth, leagueController.leaguesFromCountry);
 router.get("/leaguesByTeam/:teamId/:season", middleware.auth, leagueController.leaguesByTeam);
-router.get("/getLeagueStandings/:leagueId/:season", leagueStandingsController.getLeagueStandings);
+router.get("/getLeagueStandings/:leagueId/:season", middleware.auth, leagueStandingsController.getLeagueStandings);
 router.get("/getCupStandings/:leagueId/:season", middleware.auth, cupStandingsController.getCupStandings);
 router.get("/getFriendlyStandings/:teamId/:season",  middleware.auth, friendlyStandingsController.getFriendlyStandings);
 router.get("/getleagueStats/:leagueId/:season", middleware.auth, leagueStatsController.listLeagueStats);
