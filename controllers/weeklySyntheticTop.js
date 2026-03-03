@@ -1,7 +1,6 @@
-const fs = require("fs");
-const path = require("path");
 const SyntheticVideo = require("../models/weekVideos");
 const User = require("../models/user");
+const { uploadToR2, deleteFromR2 } = require("../config/r2");
 
 // ✅ GUARDAR NUEVO VIDEO
 const save = async (req, res) => {
@@ -18,7 +17,25 @@ const save = async (req, res) => {
     const videoFile = req.files.video[0];
     const thumbFile = req.files.thumbail?.[0] || null;
 
-    const userSynthetic = await User.findOne({nickName: userName}).lean();
+    const userSynthetic = await User.findOne({ nickName: userName }).lean();
+
+    const videoUrl = await uploadToR2({
+      buffer: videoFile.buffer,
+      mimetype: videoFile.mimetype,
+      folder: "synthetic/videos",
+      filename: videoFile.originalname,
+    });
+
+    let thumbUrl = "";
+
+    if (thumbFile) {
+      thumbUrl = await uploadToR2({
+        buffer: thumbFile.buffer,
+        mimetype: thumbFile.mimetype,
+        folder: "synthetic/thumbs",
+        filename: thumbFile.originalname,
+      });
+    }
 
     const newVideo = new SyntheticVideo({
       week,
@@ -27,8 +44,8 @@ const save = async (req, res) => {
         _id: userSynthetic._id,
         name: userSynthetic.nickName,
       },
-      video: `${videoFile.filename}`,
-      thumbail: thumbFile ? `${thumbFile.filename}` : "",
+      video: videoUrl,
+      thumbail: thumbUrl,
       views: 0,
       favorites: 0,
     });
@@ -40,7 +57,6 @@ const save = async (req, res) => {
       message: "Video saved successfully",
     });
   } catch (error) {
-    console.log(error);
     return res.json({
       status: "error",
       message: "An error occurred while saving video",
@@ -97,9 +113,7 @@ const getWeekVideo = async (req, res) => {
     // 🔥 2. Formatear respuesta
     const videosTop = videos.map((v) => {
       const isFavorite = userId
-        ? v.likedBy?.some(
-            (u) => u.toString() === userId.toString()
-          )
+        ? v.likedBy?.some((u) => u.toString() === userId.toString())
         : false;
 
       return {
@@ -147,11 +161,13 @@ const deleteWeekVideo = async (req, res) => {
     }
 
     // Eliminar archivos físicos
-    const videoPath = path.join(__dirname, "..", video.video);
-    const thumbPath = path.join(__dirname, "..", video.thumbail);
+    if (video.video) {
+      await deleteFromR2(video.video);
+    }
 
-    if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
-    if (video.thumbail && fs.existsSync(thumbPath)) fs.unlinkSync(thumbPath);
+    if (video.thumbail) {
+      await deleteFromR2(video.thumbail);
+    }
 
     await video.deleteOne();
 
@@ -187,18 +203,44 @@ const updateWeekVideo = async (req, res) => {
 
     // 📹 Actualizar video
     if (newVideo) {
-      const oldVideoPath = path.join(__dirname, "..", videoDoc.video);
-      if (fs.existsSync(oldVideoPath)) fs.unlinkSync(oldVideoPath);
-      videoDoc.video = `/media/synthetic/${newVideo.filename}`;
+      if (videoDoc.video) {
+        await deleteFromR2(videoDoc.video);
+      }
+
+      const newVideoUrl = await uploadToR2({
+        buffer: newVideo.buffer,
+        mimetype: newVideo.mimetype,
+        folder: "synthetic/videos",
+        filename: newVideo.originalname,
+      });
+
+      videoDoc.video = newVideoUrl;
     }
 
-    // 🖼 Actualizar thumbnail
+    // Actualizar thumbnail
     if (newThumb) {
-      const oldThumbPath = path.join(__dirname, "..", videoDoc.thumbail);
-      if (videoDoc.thumbail && fs.existsSync(oldThumbPath))
-        fs.unlinkSync(oldThumbPath);
-      videoDoc.thumbail = `/media/synthetic/${newThumb.filename}`;
+      if (videoDoc.thumbail) {
+        await deleteFromR2(videoDoc.thumbail);
+      }
+
+      const newThumbUrl = await uploadToR2({
+        buffer: newThumb.buffer,
+        mimetype: newThumb.mimetype,
+        folder: "synthetic/thumbs",
+        filename: newThumb.originalname,
+      });
+
+      videoDoc.thumbail = newThumbUrl;
     }
+
+    const newThumbUrl = await uploadToR2({
+      buffer: newThumb.buffer,
+      mimetype: newThumb.mimetype,
+      folder: "synthetic/thumbs",
+      filename: newThumb.originalname,
+    });
+
+    videoDoc.thumbail = newThumbUrl;
 
     // 📆 Otros datos opcionales
     if (week) videoDoc.week = week;
@@ -243,9 +285,7 @@ const setFavorite = async (req, res) => {
 
     const week = video.week;
 
-    const alreadyFav = video.likedBy.some(
-      (id) => id.toString() === userId
-    );
+    const alreadyFav = video.likedBy.some((id) => id.toString() === userId);
 
     // 📊 votos actuales del usuario esta semana
     const userVotes = await SyntheticVideo.countDocuments({
@@ -286,7 +326,7 @@ const setFavorite = async (req, res) => {
     const updatedVideo = await SyntheticVideo.findByIdAndUpdate(
       videoId,
       update,
-      { new: true }
+      { new: true },
     );
 
     // 🛡 seguridad extra
@@ -342,32 +382,6 @@ const registerView = async (req, res) => {
   }
 };
 
-const getImage = async (req, res) => {
-  try {
-    const { filename } = req.params;
-    const imagePath = path.join(__dirname, "..", "media", "synthetic", filename);
-    res.sendFile(imagePath);
-  } catch (error) {
-    return res.status(404).json({
-      status: "error",
-      message: "Image not found",
-    });
-  }
-};
-
-const getVideo = async (req, res) => {
-  try {
-    const { filename } = req.params;
-    const videoPath = path.join(__dirname, "..", "media", "synthetic", filename);
-    res.sendFile(videoPath);
-  } catch (error) {
-    return res.status(404).json({
-      status: "error",
-      message: "Video not found",
-    });
-  }
-};
-
 module.exports = {
   save,
   videos,
@@ -376,6 +390,4 @@ module.exports = {
   updateWeekVideo,
   setFavorite,
   registerView,
-  getImage,
-  getVideo,
 };

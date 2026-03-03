@@ -1,6 +1,7 @@
 const axios = require("axios");
 const TeamPlayerStatByLeague = require("../models/TeamPlayerStatByLeague");
 const Fixture = require("../models/fixture");
+const ApiFootballCall = require("../models/apifootballCals.js");
 require("dotenv").config();
 
 const API_KEY = process.env.API_FOOTBALL_KEY;
@@ -14,8 +15,49 @@ const getRefreshLimitHours = (hoursSinceLastMatch) => {
   return 168; // más de 7 días sin actividad
 };
 
-const getPlayerStats = async (teamId, leagueId, season) => {
+const getPlayerStats = async (
+  teamId,
+  leagueId,
+  season,
+  userId = null,
+  source = "system",
+) => {
   try {
+    const logApiSuccess = async (endpoint, response, start) =>
+      ApiFootballCall.create({
+        endpoint,
+        method: "GET",
+        source,
+        user: userId || null,
+        apiProvider: "api-football",
+        costUnit: 1,
+        statusCode: response.status,
+        success: true,
+        responseTimeMs: Date.now() - start,
+        remainingRequests:
+          response.headers?.["x-ratelimit-requests-remaining"] ||
+          response.headers?.["x-requests-remaining"] ||
+          null,
+      });
+
+    const logApiError = async (endpoint, err, start) =>
+      ApiFootballCall.create({
+        endpoint,
+        method: "GET",
+        source,
+        user: userId || null,
+        apiProvider: "api-football",
+        costUnit: 1,
+        statusCode: err.response?.status || 500,
+        success: false,
+        responseTimeMs: Date.now() - start,
+        remainingRequests:
+          err.response?.headers?.["x-ratelimit-requests-remaining"] ||
+          err.response?.headers?.["x-requests-remaining"] ||
+          null,
+        errorMessage: err.message,
+      });
+
     // 🟢 Buscar datos guardados
     let stats = await TeamPlayerStatByLeague.findOne({
       teamId,
@@ -47,16 +89,27 @@ const getPlayerStats = async (teamId, leagueId, season) => {
     if (!tooOld) return stats;
 
     // 🚀 Si están desactualizados, llamar a la API-Football
-    const { data } = await axios.get(`${API_URL}/players`, {
-      headers: { "x-apisports-key": API_KEY },
-      params: {
-        team: teamId,
-        league: leagueId,
-        season,
-      },
-    });
+    const start = Date.now();
+    let response;
 
-    const playerStats = data.response;
+    try {
+      response = await axios.get(`${API_URL}/players`, {
+        headers: { "x-apisports-key": API_KEY },
+        params: {
+          team: teamId,
+          league: leagueId,
+          season,
+        },
+      });
+
+      await logApiSuccess("/players", response, start);
+    } catch (err) {
+      await logApiError("/players", err, start);
+      // Mantengo tu comportamiento: si falla, devuelve lo que haya en cache o []
+      return stats || [];
+    }
+
+    const playerStats = response.data?.response;
     if (!playerStats || playerStats.length === 0) return stats || [];
 
     // 🧩 Guardar/actualizar en DB
@@ -69,12 +122,11 @@ const getPlayerStats = async (teamId, leagueId, season) => {
         lastUpdate: new Date(),
         players: playerStats,
       },
-      { upsert: true, new: true }
+      { upsert: true, new: true },
     ).lean();
 
     return stats;
   } catch (error) {
-    console.error(`❌ Error en getPlayerStats:`, error.message);
     return [];
   }
 };

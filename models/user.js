@@ -22,6 +22,9 @@ const userSchema = new Schema({
 
   pushToken: String,
 
+  lastLogin: { type: Date, default: null },
+  lastActivity: { type: Date, default: null },
+
   /* =========================
      ECONOMÍA (SECUNDARIA)
   ========================== */

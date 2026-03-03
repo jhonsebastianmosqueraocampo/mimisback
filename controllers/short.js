@@ -1,9 +1,9 @@
 const Short = require("../models/short");
-const path = require("path");
-const fs = require("fs");
+const { PutObjectCommand, DeleteObjectCommand } = require("@aws-sdk/client-s3");
+const { s3 } = require("../config/r2");
 
 // ==========================================
-// 📌 1. Obtener todos los Shorts
+// 1. Obtener todos los Shorts
 // ==========================================
 const shorts = async (req, res) => {
   try {
@@ -26,7 +26,6 @@ const shorts = async (req, res) => {
       shorts: formattedShorts,
     });
   } catch (error) {
-    console.error(error);
     return res.status(500).json({
       status: "error",
       message: "Internal server error",
@@ -35,30 +34,58 @@ const shorts = async (req, res) => {
 };
 
 // ==========================================
-// 📌 2. Crear un Short
+// 2. Crear un Short
 // ==========================================
 const create = async (req, res) => {
-  const { descripcion } = req.body;
   try {
-    // Verificar que exista al menos un video
-    if (!req.files || !req.files.video || req.files.video.length === 0) {
-      console.log("No video file uploaded");
+    const { descripcion } = req.body;
+
+    if (!req.files?.video?.[0]) {
       return res.json({
         status: "error",
         message: "No video provided",
       });
     }
 
-    // Archivos cargados
     const videoFile = req.files.video[0];
-    const thumbFile =
-      req.files.thumbnail && req.files.thumbnail.length > 0
-        ? req.files.thumbnail[0]
-        : null;
+    const thumbFile = req.files.thumbnail?.[0];
+
+    // Generar nombres únicos
+    const videoKey = `videos/shorts/${Date.now()}-${videoFile.originalname}`;
+    const thumbKey = thumbFile
+      ? `thumbnails/shorts/${Date.now()}-${thumbFile.originalname}`
+      : null;
+
+    // Subir video
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: process.env.R2_BUCKET,
+        Key: videoKey,
+        Body: videoFile.buffer,
+        ContentType: videoFile.mimetype,
+      })
+    );
+
+    // Subir thumbnail
+    if (thumbFile) {
+      await s3.send(
+        new PutObjectCommand({
+          Bucket: process.env.R2_BUCKET,
+          Key: thumbKey,
+          Body: thumbFile.buffer,
+          ContentType: thumbFile.mimetype,
+        })
+      );
+    }
+
+    const videoUrl = `https://media.mimisfutbol.com/${videoKey}`;
+    const thumbUrl = thumbKey
+      ? `https://media.mimisfutbol.com/${thumbKey}`
+      : "";
 
     const newShort = new Short({
-      video: videoFile.filename,
-      thumbnail: thumbFile ? thumbFile.filename : "",
+      video: videoUrl,
+      thumbnail: thumbUrl,
       descripcion,
       favoritos: 0,
       comentarios: [],
@@ -66,27 +93,20 @@ const create = async (req, res) => {
 
     await newShort.save();
 
-    const short = {
-      ...newShort.toObject(),
-      id: newShort._id,
-    };
-
-    delete short._id.toString();
-
     return res.json({
       status: "success",
-      short,
+      short: newShort,
     });
   } catch (error) {
-    return res.json({
+    return res.status(500).json({
       status: "error",
-      message: "Internal server error. Please, try again",
+      message: "Upload failed",
     });
   }
 };
 
 // ==========================================
-// 📌 3. Obtener un Short por ID
+// 3. Obtener un Short por ID
 // ==========================================
 const short = async (req, res) => {
   try {
@@ -128,7 +148,7 @@ const short = async (req, res) => {
 };
 
 // ==========================================
-// 📌 4. Eliminar Short
+// 4. Eliminar Short
 // ==========================================
 const deleteShort = async (req, res) => {
   try {
@@ -148,7 +168,7 @@ const deleteShort = async (req, res) => {
 };
 
 // ==========================================
-// 📌 5. Actualizar Short
+// 5. Actualizar Short
 // ==========================================
 const update = async (req, res) => {
   try {
@@ -159,64 +179,100 @@ const update = async (req, res) => {
     if (!shortDoc) {
       return res.status(404).json({
         status: "error",
-        message: "short not found",
+        message: "Short not found",
       });
     }
 
-    // 📁 Archivos cargados
     const newVideo = req.files?.video?.[0];
-    const newThumb = req.files?.thumbail?.[0];
+    const newThumb = req.files?.thumbnail?.[0];
 
-    // 🧩 Actualizar video si se envió uno nuevo
+    // =========================
+    // ACTUALIZAR VIDEO
+    // =========================
     if (newVideo) {
-      const oldVideoPath = path.join(
-        __dirname,
-        "..",
-        "media",
-        "shorts",
-        shortDoc.video,
-      );
-      if (fs.existsSync(oldVideoPath)) {
-        fs.unlinkSync(oldVideoPath);
-      }
-      shortDoc.video = `${newVideo.filename}`;
-    }
+      const videoKey = `videos/shorts/${Date.now()}-${newVideo.originalname}`;
 
-    // 🖼 Actualizar thumbnail si se envió uno nuevo
-    if (newThumb) {
-      if (shortDoc.thumbnail) {
-        const oldThumbPath = path.join(
-          __dirname,
-          "..",
-          "media",
-          "shorts",
-          shortDoc.thumbail,
-        );
-        if (fs.existsSync(oldThumbPath)) {
-          fs.unlinkSync(oldThumbPath);
+      await s3.send(
+        new PutObjectCommand({
+          Bucket: process.env.R2_BUCKET,
+          Key: videoKey,
+          Body: newVideo.buffer,
+          ContentType: newVideo.mimetype,
+        })
+      );
+
+      // Opcional: eliminar el anterior de R2
+      if (shortDoc.video) {
+        const oldKey = shortDoc.video.split("media.mimisfutbol.com/")[1];
+
+        if (oldKey) {
+          await s3.send(
+            new DeleteObjectCommand({
+              Bucket: process.env.R2_BUCKET,
+              Key: oldKey,
+            })
+          );
         }
       }
-      shortDoc.thumbnail = `${newThumb.filename}`;
+
+      shortDoc.video = `https://media.mimisfutbol.com/${videoKey}`;
     }
 
-    //Actualizar descripcion si llega
-    if (descripcion) shortDoc.descripcion = descripcion;
+    // =========================
+    // ACTUALIZAR THUMBNAIL
+    // =========================
+    if (newThumb) {
+      const thumbKey = `thumbnails/shorts/${Date.now()}-${newThumb.originalname}`;
+
+      await s3.send(
+        new PutObjectCommand({
+          Bucket: process.env.R2_BUCKET,
+          Key: thumbKey,
+          Body: newThumb.buffer,
+          ContentType: newThumb.mimetype,
+        })
+      );
+
+      if (shortDoc.thumbnail) {
+        const oldThumbKey = shortDoc.thumbnail.split("media.mimisfutbol.com/")[1];
+
+        if (oldThumbKey) {
+          await s3.send(
+            new DeleteObjectCommand({
+              Bucket: process.env.R2_BUCKET,
+              Key: oldThumbKey,
+            })
+          );
+        }
+      }
+
+      shortDoc.thumbnail = `https://media.mimisfutbol.com/${thumbKey}`;
+    }
+
+    // =========================
+    // ACTUALIZAR DESCRIPCIÓN
+    // =========================
+    if (descripcion) {
+      shortDoc.descripcion = descripcion;
+    }
 
     await shortDoc.save();
+
     return res.json({
       status: "success",
       short: shortDoc,
     });
+
   } catch (error) {
-    return res.json({
+    return res.status(500).json({
       status: "error",
-      message: "Internal server error. Please, try again",
+      message: "Internal server error",
     });
   }
 };
 
 // ==========================================
-// 📌 6. Agregar comentario
+//  6. Agregar comentario
 // ==========================================
 const comentario = async (req, res) => {
   try {
@@ -252,7 +308,7 @@ const comentario = async (req, res) => {
 };
 
 // ==========================================
-// 📌 7. Incrementar favoritos
+// 7. Incrementar favoritos
 // ==========================================
 const favorito = async (req, res) => {
   try {
@@ -270,11 +326,11 @@ const favorito = async (req, res) => {
     const alreadyLiked = short.likedBy.includes(userId);
 
     if (alreadyLiked) {
-      // 🔽 UNLIKE
+      // UNLIKE
       short.likedBy.pull(userId);
       short.favoritos = Math.max(0, short.favoritos - 1);
     } else {
-      // 🔼 LIKE
+      // LIKE
       short.likedBy.push(userId);
       short.favoritos += 1;
     }
@@ -294,32 +350,6 @@ const favorito = async (req, res) => {
   }
 };
 
-const getImage = async (req, res) => {
-  try {
-    const { filename } = req.params;
-    const imagePath = path.join(__dirname, "..", "media", "shorts", filename);
-    res.sendFile(imagePath);
-  } catch (error) {
-    return res.status(404).json({
-      status: "error",
-      message: "Image not found",
-    });
-  }
-};
-
-const getVideo = async (req, res) => {
-  try {
-    const { filename } = req.params;
-    const videoPath = path.join(__dirname, "..", "media", "shorts", filename);
-    res.sendFile(videoPath);
-  } catch (error) {
-    return res.status(404).json({
-      status: "error",
-      message: "Video not found",
-    });
-  }
-};
-
 module.exports = {
   shorts,
   create,
@@ -327,7 +357,5 @@ module.exports = {
   deleteShort,
   update,
   comentario,
-  favorito,
-  getImage,
-  getVideo,
+  favorito
 };

@@ -1,4 +1,3 @@
-// helpers/getCurrentSeason.js
 const axios = require("axios");
 const dayjs = require("dayjs");
 const SeasonCache = require("../models/seasonCache");

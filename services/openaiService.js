@@ -59,7 +59,6 @@ ${JSON.stringify(data)}
 
     return JSON.parse(response.choices[0].message.content);
   } catch (error) {
-    console.error(error);
     throw new Error("Error procesando análisis con IA");
   }
 }

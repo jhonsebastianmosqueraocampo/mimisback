@@ -1,8 +1,9 @@
+const axios = require("axios");
 const Team = require("../models/team");
 const Favorite = require("../models/favorite");
 const TeamPlayerStatByLeague = require("../models/TeamPlayerStatByLeague");
 const Squad = require("../models/squad");
-const axios = require("axios");
+const ApiFootballCall = require("../models/apifootballCals.js");
 const { getCurrentSeason } = require("../helper/getCurrentSeason.js");
 require("dotenv").config();
 
@@ -19,11 +20,11 @@ const teams = async (req, res) => {
     return res.json({ status: "error", message: "Invalid leagueId or season" });
   }
 
-  if (season == 0) {
-    season = await getCurrentSeason({ leagueId: leagueId });
-  }
+  const userId = req.user.id;
 
-  console.log(season)
+  if (season == 0) {
+    season = await getCurrentSeason({ leagueId: leagueId, userId });
+  }
 
   try {
     const existingTeams = await Team.find({ leagueId: Number(leagueId) });
@@ -35,16 +36,56 @@ const teams = async (req, res) => {
       });
     }
 
-    // 2. Si no hay, hacer el request a la API
-    const response = await axios.get(`${API_URL}/teams`, {
-      headers: {
-        "x-apisports-key": API_KEY,
-      },
-      params: {
-        league: leagueId,
-        season,
-      },
-    });
+    /* ===========================
+       🔹 LLAMADO A API-FOOTBALL
+    ============================ */
+    const start = Date.now();
+    let response;
+
+    try {
+      response = await axios.get(`${API_URL}/teams`, {
+        headers: { "x-apisports-key": API_KEY },
+        params: { league: leagueId, season },
+      });
+
+      await ApiFootballCall.create({
+        endpoint: "/teams",
+        method: "GET",
+        source: "manual",
+        user: userId || null,
+        apiProvider: "api-football",
+        costUnit: 1,
+        statusCode: response.status,
+        success: true,
+        responseTimeMs: Date.now() - start,
+        remainingRequests:
+          response.headers?.["x-ratelimit-requests-remaining"] ||
+          response.headers?.["x-requests-remaining"] ||
+          null,
+      });
+    } catch (err) {
+      await ApiFootballCall.create({
+        endpoint: "/teams",
+        method: "GET",
+        source: "manual",
+        user: userId || null,
+        apiProvider: "api-football",
+        costUnit: 1,
+        statusCode: err.response?.status || 500,
+        success: false,
+        responseTimeMs: Date.now() - start,
+        remainingRequests:
+          err.response?.headers?.["x-ratelimit-requests-remaining"] ||
+          err.response?.headers?.["x-requests-remaining"] ||
+          null,
+        errorMessage: err.message,
+      });
+
+      return res.json({
+        status: "error",
+        message: "Error consultando equipos en API-Football",
+      });
+    }
 
     if (!response.data.response || response.data.response.length === 0) {
       return res.json({ status: "error", message: "No teams found" });
@@ -83,27 +124,83 @@ const getTeam = async (req, res) => {
   try {
     let team = await Team.findOne({ teamId }).lean();
 
-     // Buscar favoritos del usuario
+    // Buscar favoritos del usuario
     const favorites = await Favorite.findOne({ user: userId }).lean();
 
+    // ✅ Si ya existe en BD → no gastar request
     if (team) {
-      const isFavorite = favorites?.equipos?.includes(team?.name) || false;
-      return res.json({ status: "success", team, isFavorite });
+      const isFavorite =
+        favorites?.equipos?.includes(team?.name) || false;
+
+      return res.json({
+        status: "success",
+        team,
+        isFavorite,
+      });
     }
 
-    const { data } = await axios.get(`${API_URL}/teams`, {
-      headers: {
-        "x-apisports-key": API_KEY,
-      },
-      params: {
-        id: teamId,
-      },
-    });
+    /* ===========================
+       🔹 LLAMADO A API-FOOTBALL
+    ============================ */
+    const start = Date.now();
+    let apiResponse;
 
-    const responseTeam = data.response?.[0];
+    try {
+      apiResponse = await axios.get(`${API_URL}/teams`, {
+        headers: {
+          "x-apisports-key": API_KEY,
+        },
+        params: {
+          id: teamId,
+        },
+      });
+
+      await ApiFootballCall.create({
+        endpoint: "/teams",
+        method: "GET",
+        source: "manual",
+        user: userId || null,
+        apiProvider: "api-football",
+        costUnit: 1,
+        statusCode: apiResponse.status,
+        success: true,
+        responseTimeMs: Date.now() - start,
+        remainingRequests:
+          apiResponse.headers?.["x-ratelimit-requests-remaining"] ||
+          apiResponse.headers?.["x-requests-remaining"] ||
+          null,
+      });
+    } catch (err) {
+      await ApiFootballCall.create({
+        endpoint: "/teams",
+        method: "GET",
+        source: "manual",
+        user: userId || null,
+        apiProvider: "api-football",
+        costUnit: 1,
+        statusCode: err.response?.status || 500,
+        success: false,
+        responseTimeMs: Date.now() - start,
+        remainingRequests:
+          err.response?.headers?.["x-ratelimit-requests-remaining"] ||
+          err.response?.headers?.["x-requests-remaining"] ||
+          null,
+        errorMessage: err.message,
+      });
+
+      return res.status(500).json({
+        status: "error",
+        message: "Error consultando equipo en API-Football",
+      });
+    }
+
+    const responseTeam = apiResponse.data.response?.[0];
 
     if (!responseTeam) {
-      return res.json({ status: "error", message: "Team not found in API" });
+      return res.json({
+        status: "error",
+        message: "Team not found in API",
+      });
     }
 
     const newTeam = await Team.create({
@@ -116,7 +213,11 @@ const getTeam = async (req, res) => {
     const newIsFavorite =
       favorites?.equipos?.includes(responseTeam.team.name) || false;
 
-    return res.json({ status: "success", team: newTeam, isFavorite: newIsFavorite, });
+    return res.json({
+      status: "success",
+      team: newTeam,
+      isFavorite: newIsFavorite,
+    });
   } catch (error) {
     return res.status(500).json({
       status: "error",
@@ -128,13 +229,68 @@ const getTeam = async (req, res) => {
 const getTeamPlayerStats = async (req, res) => {
   const teamId = parseInt(req.params.teamId, 10);
   let season = parseInt(req.params.season, 10);
+  const userId = req.user?.id || null;
+
   if (isNaN(teamId) || isNaN(season)) {
     return res.json({ status: "error", message: "Invalid parameters" });
   }
 
   if (season === 0) {
-    season = await getCurrentSeason({ teamId: teamId });
+    season = await getCurrentSeason({ teamId: teamId, userId });
   }
+
+  // helper de log
+  const logApiSuccess = async (endpoint, response, start, source = "manual") =>
+    ApiFootballCall.create({
+      endpoint,
+      method: "GET",
+      source,
+      user: userId || null,
+      apiProvider: "api-football",
+      costUnit: 1,
+      statusCode: response.status,
+      success: true,
+      responseTimeMs: Date.now() - start,
+      remainingRequests:
+        response.headers?.["x-ratelimit-requests-remaining"] ||
+        response.headers?.["x-requests-remaining"] ||
+        null,
+    });
+
+  const logApiError = async (endpoint, err, start, source = "manual") =>
+    ApiFootballCall.create({
+      endpoint,
+      method: "GET",
+      source,
+      user: userId || null,
+      apiProvider: "api-football",
+      costUnit: 1,
+      statusCode: err.response?.status || 500,
+      success: false,
+      responseTimeMs: Date.now() - start,
+      remainingRequests:
+        err.response?.headers?.["x-ratelimit-requests-remaining"] ||
+        err.response?.headers?.["x-requests-remaining"] ||
+        null,
+      errorMessage: err.message,
+    });
+
+  // helper para pedir una página y loguear
+  const fetchPlayersPage = async (leagueId, page) => {
+    const start = Date.now();
+    try {
+      const r = await axios.get(`${API_URL}/players`, {
+        headers: { "x-apisports-key": API_KEY },
+        params: { team: teamId, season, league: leagueId, page },
+      });
+
+      await logApiSuccess("/players", r, start);
+      return r.data?.response || [];
+    } catch (err) {
+      await logApiError("/players", err, start);
+      throw err; // mantener comportamiento: si falla una página -> error general
+    }
+  };
 
   try {
     const leagues = await getLeaguesByTeam(teamId, season);
@@ -158,52 +314,13 @@ const getTeamPlayerStats = async (req, res) => {
       });
 
       if (!existingStats || existingStats.lastUpdate < oneHourAgo) {
-        const resPage1 = await axios.get(`${API_URL}/players`, {
-          headers: { "x-apisports-key": API_KEY },
-          params: {
-            team: teamId,
-            season,
-            league: leagueId,
-            page: 1,
-          },
-        });
+        // 4 llamados (páginas)
+        const page1 = await fetchPlayersPage(leagueId, 1);
+        const page2 = await fetchPlayersPage(leagueId, 2);
+        const page3 = await fetchPlayersPage(leagueId, 3);
+        const page4 = await fetchPlayersPage(leagueId, 4);
 
-        const resPage2 = await axios.get(`${API_URL}/players`, {
-          headers: { "x-apisports-key": API_KEY },
-          params: {
-            team: teamId,
-            season,
-            league: leagueId,
-            page: 2,
-          },
-        });
-
-        const resPage3 = await axios.get(`${API_URL}/players`, {
-          headers: { "x-apisports-key": API_KEY },
-          params: {
-            team: teamId,
-            season,
-            league: leagueId,
-            page: 3,
-          },
-        });
-
-        const resPage4 = await axios.get(`${API_URL}/players`, {
-          headers: { "x-apisports-key": API_KEY },
-          params: {
-            team: teamId,
-            season,
-            league: leagueId,
-            page: 4,
-          },
-        });
-
-        const playerStats = [
-          ...resPage1.data.response,
-          ...resPage2.data.response,
-          ...resPage3.data.response,
-          ...resPage4.data.response,
-        ];
+        const playerStats = [...page1, ...page2, ...page3, ...page4];
 
         existingStats = await TeamPlayerStatByLeague.findOneAndUpdate(
           { teamId, season, leagueId },
@@ -217,6 +334,7 @@ const getTeamPlayerStats = async (req, res) => {
           { upsert: true, new: true }
         );
       }
+
       allStats.push(existingStats);
     }
 
@@ -237,15 +355,53 @@ const getTeamPlayerStatsByLeague = async (req, res) => {
   const leagueId = parseInt(req.params.leagueId, 10);
   let season = parseInt(req.params.season, 10);
 
-  if (!teamId || !leagueId || !season) {
+  if (!teamId || !leagueId || isNaN(teamId) || isNaN(leagueId) || isNaN(season)) {
     return res
       .status(400)
       .json({ status: "error", message: "Invalid parameters" });
   }
 
+  const userId = req.user.id;
+
   if (season === 0) {
-    season = await getCurrentSeason({ leagueId: leagueId });
+    season = await getCurrentSeason({ leagueId: leagueId, userId });
   }
+
+  // helpers de log
+  const logApiSuccess = async (endpoint, response, start, source = "manual") =>
+    ApiFootballCall.create({
+      endpoint,
+      method: "GET",
+      source,
+      user: userId || null,
+      apiProvider: "api-football",
+      costUnit: 1,
+      statusCode: response.status,
+      success: true,
+      responseTimeMs: Date.now() - start,
+      remainingRequests:
+        response.headers?.["x-ratelimit-requests-remaining"] ||
+        response.headers?.["x-requests-remaining"] ||
+        null,
+    });
+
+  const logApiError = async (endpoint, err, start, source = "manual") =>
+    ApiFootballCall.create({
+      endpoint,
+      method: "GET",
+      source,
+      user: userId || null,
+      apiProvider: "api-football",
+      costUnit: 1,
+      statusCode: err.response?.status || 500,
+      success: false,
+      responseTimeMs: Date.now() - start,
+      remainingRequests:
+        err.response?.headers?.["x-ratelimit-requests-remaining"] ||
+        err.response?.headers?.["x-requests-remaining"] ||
+        null,
+      errorMessage: err.message,
+    });
 
   try {
     const existingStats = await TeamPlayerStatByLeague.findOne({
@@ -253,6 +409,7 @@ const getTeamPlayerStatsByLeague = async (req, res) => {
       leagueId,
       season,
     });
+
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
     if (existingStats && existingStats.lastUpdate > oneDayAgo) {
@@ -262,16 +419,33 @@ const getTeamPlayerStatsByLeague = async (req, res) => {
       });
     }
 
-    const { data } = await axios.get(`${API_URL}/players`, {
-      headers: { "x-apisports-key": API_KEY },
-      params: {
-        team: teamId,
-        league: leagueId,
-        season,
-      },
-    });
+    /* ===========================
+       🔹 LLAMADO A API-FOOTBALL
+    ============================ */
+    const start = Date.now();
+    let apiRes;
 
-    const playerStats = data.response;
+    try {
+      apiRes = await axios.get(`${API_URL}/players`, {
+        headers: { "x-apisports-key": API_KEY },
+        params: {
+          team: teamId,
+          league: leagueId,
+          season,
+        },
+      });
+
+      await logApiSuccess("/players", apiRes, start);
+    } catch (err) {
+      await logApiError("/players", err, start);
+
+      return res.json({
+        status: "error",
+        message: "Error consultando jugadores en API-Football",
+      });
+    }
+
+    const playerStats = apiRes.data?.response || [];
 
     const updatedDoc = await TeamPlayerStatByLeague.findOneAndUpdate(
       { teamId, leagueId, season },
@@ -299,10 +473,47 @@ const getTeamPlayerStatsByLeague = async (req, res) => {
 
 const getSquad = async (req, res) => {
   const teamId = parseInt(req.params.teamId, 10);
+  const userId = req.user?.id || null;
 
   if (isNaN(teamId) || !teamId) {
     return res.json({ status: "error", message: "Invalid teamId" });
   }
+
+  // helpers de log
+  const logApiSuccess = async (endpoint, response, start, source = "manual") =>
+    ApiFootballCall.create({
+      endpoint,
+      method: "GET",
+      source,
+      user: userId || null,
+      apiProvider: "api-football",
+      costUnit: 1,
+      statusCode: response.status,
+      success: true,
+      responseTimeMs: Date.now() - start,
+      remainingRequests:
+        response.headers?.["x-ratelimit-requests-remaining"] ||
+        response.headers?.["x-requests-remaining"] ||
+        null,
+    });
+
+  const logApiError = async (endpoint, err, start, source = "manual") =>
+    ApiFootballCall.create({
+      endpoint,
+      method: "GET",
+      source,
+      user: userId || null,
+      apiProvider: "api-football",
+      costUnit: 1,
+      statusCode: err.response?.status || 500,
+      success: false,
+      responseTimeMs: Date.now() - start,
+      remainingRequests:
+        err.response?.headers?.["x-ratelimit-requests-remaining"] ||
+        err.response?.["x-requests-remaining"] ||
+        null,
+      errorMessage: err.message,
+    });
 
   try {
     const existingSquad = await Squad.findOne({ teamId });
@@ -319,12 +530,29 @@ const getSquad = async (req, res) => {
       }
     }
 
-    const { data } = await axios.get(
-      `${API_URL}/players/squads?team=${teamId}`,
-      {
+    /* ===========================
+       🔹 LLAMADO A API-FOOTBALL
+    ============================ */
+    const start = Date.now();
+    let apiRes;
+
+    try {
+      apiRes = await axios.get(`${API_URL}/players/squads`, {
         headers: { "x-apisports-key": API_KEY },
-      }
-    );
+        params: { team: teamId },
+      });
+
+      await logApiSuccess("/players/squads", apiRes, start);
+    } catch (err) {
+      await logApiError("/players/squads", err, start);
+
+      return res.json({
+        status: "error",
+        message: "Error consultando squad en API-Football",
+      });
+    }
+
+    const data = apiRes.data;
 
     if (!data.response || data.response.length === 0) {
       return res.json({
@@ -371,10 +599,48 @@ const search = async (req, res) => {
     const { name } = req.params;
     if (!name || !name.trim()) {
       return res.status(400).json({
-        status: 'error',
+        status: "error",
         message: "Nombre requerido",
       });
     }
+
+    const userId = req.user?.id || null;
+
+    // helpers de log
+    const logApiSuccess = async (endpoint, response, start, source = "manual") =>
+      ApiFootballCall.create({
+        endpoint,
+        method: "GET",
+        source,
+        user: userId || null,
+        apiProvider: "api-football",
+        costUnit: 1,
+        statusCode: response.status,
+        success: true,
+        responseTimeMs: Date.now() - start,
+        remainingRequests:
+          response.headers?.["x-ratelimit-requests-remaining"] ||
+          response.headers?.["x-requests-remaining"] ||
+          null,
+      });
+
+    const logApiError = async (endpoint, err, start, source = "manual") =>
+      ApiFootballCall.create({
+        endpoint,
+        method: "GET",
+        source,
+        user: userId || null,
+        apiProvider: "api-football",
+        costUnit: 1,
+        statusCode: err.response?.status || 500,
+        success: false,
+        responseTimeMs: Date.now() - start,
+        remainingRequests:
+          err.response?.headers?.["x-ratelimit-requests-remaining"] ||
+          err.response?.headers?.["x-requests-remaining"] ||
+          null,
+        errorMessage: err.message,
+      });
 
     const queryName = name.trim().toLowerCase();
     const regex = new RegExp(escapeRegex(queryName), "i");
@@ -387,30 +653,22 @@ const search = async (req, res) => {
       .lean();
 
     if (localTeams.length) {
-      // 🧠 Calcular relevancia
       const scoredTeams = localTeams.map((t) => {
         const nameLower = t.name?.toLowerCase() || "";
         let score = 0;
 
-        // Exact match
         if (nameLower === queryName) score += 10;
-
-        // Palabras completas que coinciden
         if (nameLower.split(" ").includes(queryName)) score += 6;
-
-        // Coincidencia parcial
         if (nameLower.includes(queryName)) score += 3;
 
         return { ...t, score };
       });
 
-      // 🔹 Ordenar por relevancia y fecha de actualización
       scoredTeams.sort((a, b) => {
         if (b.score !== a.score) return b.score - a.score;
         return new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0);
       });
 
-      // 🔹 Verificar si los datos son recientes (<24h)
       const lastUpdated = Math.max(
         ...scoredTeams.map((t) => new Date(t.updatedAt || 0).getTime())
       );
@@ -426,9 +684,23 @@ const search = async (req, res) => {
 
     // 2️⃣ Consultar API-Football
     const apiUrl = `${API_URL}/teams?search=${encodeURIComponent(queryName)}`;
-    const response = await axios.get(apiUrl, {
-      headers: { "x-apisports-key": API_KEY },
-    });
+
+    const start = Date.now();
+    let response;
+
+    try {
+      response = await axios.get(apiUrl, {
+        headers: { "x-apisports-key": API_KEY },
+      });
+
+      await logApiSuccess("/teams", response, start);
+    } catch (err) {
+      await logApiError("/teams", err, start);
+      return res.status(500).json({
+        status: "error",
+        message: "Error consultando equipos en API-Football",
+      });
+    }
 
     const apiTeams = Array.isArray(response?.data?.response)
       ? response.data.response
@@ -466,7 +738,6 @@ const search = async (req, res) => {
       });
     }
 
-    // 4️⃣ Ordenar por relevancia
     cleanTeams.sort((a, b) => b.score - a.score);
 
     // 5️⃣ Guardar / actualizar en BD
@@ -483,10 +754,6 @@ const search = async (req, res) => {
       teams: cleanTeams,
     });
   } catch (error) {
-    console.error(
-      "❌ Error buscando equipos:",
-      error?.response?.data || error.message
-    );
     return res.status(500).json({
       status: "error",
       message: "Error al buscar equipos. Intenta de nuevo.",

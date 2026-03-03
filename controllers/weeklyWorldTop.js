@@ -1,43 +1,56 @@
-const fs = require("fs");
-const path = require("path");
 const WorldVideo = require("../models/weekWorldVideo");
+const { uploadToR2, deleteFromR2 } = require("../config/r2");
 
 const save = async (req, res) => {
   try {
     const { week } = req.body;
 
-    // Verificar que exista al menos un video
-    if (!req.files || !req.files.video || req.files.video.length === 0) {
+    if (!req.files?.video?.length) {
       return res.json({
         status: "error",
         message: "No video provided",
       });
     }
 
-    // Archivos cargados
     const videoFile = req.files.video[0];
-    const thumbFile = req.files.thumbail && req.files.thumbail.length > 0
-      ? req.files.thumbail[0]
-      : null;
+    const thumbFile = req.files?.thumbail?.[0] || null;
 
-    // Crear nuevo registro
+    const videoUrl = await uploadToR2({
+      buffer: videoFile.buffer,
+      mimetype: videoFile.mimetype,
+      folder: "world/videos",
+      filename: videoFile.originalname,
+    });
+
+    let thumbUrl = "";
+
+    if (thumbFile) {
+      thumbUrl = await uploadToR2({
+        buffer: thumbFile.buffer,
+        mimetype: thumbFile.mimetype,
+        folder: "world/thumbs",
+        filename: thumbFile.originalname,
+      });
+    }
+
     const newVideo = new WorldVideo({
-      week, // ejemplo: "14/11/2025"
-      video: `${videoFile.filename}`,
-      thumbail: thumbFile ? `${thumbFile.filename}` : "",
+      week,
+      video: videoUrl,
+      thumbail: thumbUrl,
     });
 
     await newVideo.save();
 
     return res.status(200).json({
       status: "success",
-      message: "Video and thumbnail saved successfully",
+      message: "Video saved successfully",
       video: newVideo,
     });
   } catch (error) {
-    return res.json({
+    console.error(error);
+    return res.status(500).json({
       status: "error",
-      message: "An error occurred while saving video",
+      message: "Error saving video",
     });
   }
 };
@@ -97,16 +110,12 @@ const deleteWeekVideo = async (req, res) => {
       });
     }
 
-    // Eliminar archivo del sistema
-    const videoPath = path.join(__dirname, "..", video.video);
-    if (fs.existsSync(videoPath)) {
-      fs.unlinkSync(videoPath);
+    if (video.video) {
+      await deleteFromR2(video.video);
     }
 
-    // Eliminar thumbnail si existe
     if (video.thumbail) {
-      const thumbPath = path.join(__dirname, "..", video.thumbail);
-      if (fs.existsSync(thumbPath)) fs.unlinkSync(thumbPath);
+      await deleteFromR2(video.thumbail);
     }
 
     await video.deleteOne();
@@ -118,7 +127,7 @@ const deleteWeekVideo = async (req, res) => {
   } catch (error) {
     return res.status(500).json({
       status: "error",
-      message: "An error was found. Please, try again",
+      message: "Error deleting video",
     });
   }
 };
@@ -136,31 +145,39 @@ const updateWeekVideo = async (req, res) => {
       });
     }
 
-    // 📁 Archivos cargados
     const newVideo = req.files?.video?.[0];
     const newThumb = req.files?.thumbail?.[0];
 
-    // 🧩 Actualizar video si se envió uno nuevo
     if (newVideo) {
-      const oldVideoPath = path.join(__dirname, "..", "media", "world", videoDoc.video);
-      if (fs.existsSync(oldVideoPath)) {
-        fs.unlinkSync(oldVideoPath);
+      if (videoDoc.video) {
+        await deleteFromR2(videoDoc.video);
       }
-      videoDoc.video = `${newVideo.filename}`;
+
+      const newVideoUrl = await uploadToR2({
+        buffer: newVideo.buffer,
+        mimetype: newVideo.mimetype,
+        folder: "world/videos",
+        filename: newVideo.originalname,
+      });
+
+      videoDoc.video = newVideoUrl;
     }
 
-    // 🖼 Actualizar thumbnail si se envió uno nuevo
     if (newThumb) {
       if (videoDoc.thumbail) {
-        const oldThumbPath = path.join(__dirname, "..", "media", "world", videoDoc.thumbail);
-        if (fs.existsSync(oldThumbPath)) {
-          fs.unlinkSync(oldThumbPath);
-        }
+        await deleteFromR2(videoDoc.thumbail);
       }
-      videoDoc.thumbail = `${newThumb.filename}`;
+
+      const newThumbUrl = await uploadToR2({
+        buffer: newThumb.buffer,
+        mimetype: newThumb.mimetype,
+        folder: "world/thumbs",
+        filename: newThumb.originalname,
+      });
+
+      videoDoc.thumbail = newThumbUrl;
     }
 
-    // 📆 Actualizar fecha de semana si llega
     if (week) videoDoc.week = week;
 
     await videoDoc.save();
@@ -170,38 +187,13 @@ const updateWeekVideo = async (req, res) => {
       message: "Video updated successfully",
     });
   } catch (error) {
-    return res.json({
+    console.error(error);
+    return res.status(500).json({
       status: "error",
-      message: "An error occurred while updating video",
+      message: "Error updating video",
     });
   }
 };
-
-const getImage = async (req, res) => {
-  try {
-    const { filename } = req.params;
-    const imagePath = path.join(__dirname, "..", "media", "world", filename);
-    res.sendFile(imagePath);
-  } catch (error) {
-    return res.status(404).json({
-      status: "error",
-      message: "Image not found",
-    });
-  }
-};
-
-const getVideo = async (req, res) => {
-  try {
-    const { filename } = req.params;
-    const videoPath = path.join(__dirname, "..", "media", "world", filename);
-    res.sendFile(videoPath);
-  } catch (error) {
-    return res.status(404).json({
-      status: "error",
-      message: "Video not found",
-    });
-  }
-};  
 
 module.exports = {
   save,
@@ -209,6 +201,4 @@ module.exports = {
   getWeekVideo,
   deleteWeekVideo,
   updateWeekVideo,
-  getImage,
-  getVideo,
 };

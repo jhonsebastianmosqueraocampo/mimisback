@@ -78,12 +78,6 @@ const countryLangMap = {
   NZ: "en", // Nueva Zelanda
 };
 
-const mapMongoId = (doc) => ({
-  ...doc,
-  id: doc._id,
-  _id: undefined,
-});
-
 const getNewsForTeam = async (req, res) => {
   const team = req.params.team?.toLowerCase();
   if (!team) return res.json({ status: "error", message: "No team provided" });

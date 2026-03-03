@@ -1,8 +1,8 @@
 const UserNew = require("../models/userNew");
-const path = require("path");
+const { uploadToR2, deleteFromR2 } = require("../config/r2");
 
 // ================================
-// 📌 1. Obtener *una noticia* por ID
+// 1. Obtener *una noticia* por ID
 // ================================
 const getUserNew = async (req, res) => {
   try {
@@ -30,7 +30,7 @@ const getUserNew = async (req, res) => {
 };
 
 // ======================================
-// 📌 2. Todas las noticias globales (ordenadas por fecha)
+// 2. Todas las noticias globales (ordenadas por fecha)
 // ======================================
 const getGeneralNews = async (req, res) => {
   try {
@@ -58,7 +58,7 @@ const getGeneralNews = async (req, res) => {
 };
 
 // ================================
-// 📌 3. Crear noticia
+// 3. Crear noticia
 // ================================
 const createNew = async (req, res) => {
   try {
@@ -79,7 +79,16 @@ const createNew = async (req, res) => {
       (f) => f.fieldname === "fotoPrincipal",
     );
 
-    const fotoPrincipal = fotoPrincipalFile ? fotoPrincipalFile.filename : null;
+    let fotoPrincipal = null;
+
+    if (fotoPrincipalFile) {
+      fotoPrincipal = await uploadToR2({
+        buffer: fotoPrincipalFile.buffer,
+        mimetype: fotoPrincipalFile.mimetype,
+        folder: "news",
+        filename: fotoPrincipalFile.originalname,
+      });
+    }
 
     // =========================
     // CARRUSEL
@@ -89,15 +98,27 @@ const createNew = async (req, res) => {
     if (req.body.carruselFotos) {
       const parsed = JSON.parse(req.body.carruselFotos);
 
-      carruselMeta = parsed.map((item) => {
-        // buscar el archivo que corresponde a esta referencia
-        const file = req.files.find((f) => f.fieldname === item.foto);
+      carruselMeta = await Promise.all(
+        parsed.map(async (item) => {
+          const file = req.files.find((f) => f.fieldname === item.foto);
 
-        return {
-          foto: file ? file.filename : item.foto, // filename real
-          url: item.url,
-        };
-      });
+          let finalFoto = item.foto;
+
+          if (file) {
+            finalFoto = await uploadToR2({
+              buffer: file.buffer,
+              mimetype: file.mimetype,
+              folder: "news",
+              filename: file.originalname,
+            });
+          }
+
+          return {
+            foto: finalFoto,
+            url: item.url,
+          };
+        }),
+      );
     }
 
     // =========================
@@ -123,7 +144,6 @@ const createNew = async (req, res) => {
       news: newNew,
     });
   } catch (error) {
-    console.log(error);
     return res.status(500).json({
       status: "error",
       message: "Error interno del servidor",
@@ -132,7 +152,7 @@ const createNew = async (req, res) => {
 };
 
 // ================================
-// 📌 4. Editar noticia
+// 4. Editar noticia
 // ================================
 const editNew = async (req, res) => {
   try {
@@ -174,7 +194,17 @@ const editNew = async (req, res) => {
     );
 
     if (fotoPrincipalFile) {
-      fotoPrincipal = fotoPrincipalFile.filename;
+      // borrar anterior si existe
+      if (existing.fotoPrincipal) {
+        await deleteFromR2(existing.fotoPrincipal);
+      }
+
+      fotoPrincipal = await uploadToR2({
+        buffer: fotoPrincipalFile.buffer,
+        mimetype: fotoPrincipalFile.mimetype,
+        folder: "news",
+        filename: fotoPrincipalFile.originalname,
+      });
     }
 
     // =========================
@@ -185,14 +215,27 @@ const editNew = async (req, res) => {
     if (req.body.carruselFotos) {
       const carruselMeta = JSON.parse(req.body.carruselFotos);
 
-      carruselFinal = carruselMeta.map((item) => {
+      carruselFinal = [];
+
+      for (const item of carruselMeta) {
         const file = req.files.find((f) => f.fieldname === item.foto);
 
-        return {
-          foto: file ? file.filename : item.foto, // mantiene o reemplaza
+        let finalFoto = item.foto;
+
+        if (file) {
+          finalFoto = await uploadToR2({
+            buffer: file.buffer,
+            mimetype: file.mimetype,
+            folder: "news",
+            filename: file.originalname,
+          });
+        }
+
+        carruselFinal.push({
+          foto: finalFoto,
           url: item.url,
-        };
-      });
+        });
+      }
     } else {
       // si no llega carruselFotos, mantenemos el existente
       carruselFinal = existing.carruselFotos;
@@ -221,7 +264,6 @@ const editNew = async (req, res) => {
       news: updated,
     });
   } catch (error) {
-    console.error(error);
     return res.status(500).json({
       status: "error",
       message: "Error interno del servidor",
@@ -255,6 +297,18 @@ const deleteNew = async (req, res) => {
       });
     }
 
+    // borrar foto principal
+    if (existing.fotoPrincipal) {
+      await deleteFromR2(existing.fotoPrincipal);
+    }
+
+    // borrar carrusel
+    for (const item of existing.carruselFotos || []) {
+      if (item.foto) {
+        await deleteFromR2(item.foto);
+      }
+    }
+
     // 3. Eliminar noticia
     await UserNew.findByIdAndDelete(id);
 
@@ -278,7 +332,7 @@ const deleteNew = async (req, res) => {
 };
 
 // ================================
-// 📌 6. Noticias del usuario actual
+// 6. Noticias del usuario actual
 // ================================
 const getNews = async (req, res) => {
   try {
@@ -305,19 +359,6 @@ const getNews = async (req, res) => {
   }
 };
 
-const getImage = async (req, res) => {
-  try {
-    const { filename } = req.params;
-    const imagePath = path.join(__dirname, "..", "media", "news", filename);
-    res.sendFile(imagePath);
-  } catch (error) {
-    return res.status(404).json({
-      status: "error",
-      message: "Image not found",
-    });
-  }
-};
-
 module.exports = {
   getNews,
   deleteNew,
@@ -325,5 +366,4 @@ module.exports = {
   editNew,
   getGeneralNews,
   getUserNew,
-  getImage
 };

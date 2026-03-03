@@ -2,6 +2,7 @@
 const axios = require("axios");
 const Fixture = require("../models/fixture");
 const LiveMatch = require("../models/LiveMatch");
+const ApiFootballCall = require("../models/apifootballCals.js");
 const { isPriorityCompetition } = require("../data/leaguesPriority");
 const cron = require("node-cron");
 require("dotenv").config();
@@ -10,6 +11,55 @@ const API_KEY = process.env.API_FOOTBALL_KEY;
 const API_URL = process.env.API_URL;
 
 const MIN_REFRESH_MS = 75 * 1000; // poquito mas de 1 min
+
+const SOURCE = "cron"; // ✅ para logs internos
+
+function getRemaining(headers) {
+  return (
+    headers?.["x-ratelimit-requests-remaining"] ||
+    headers?.["x-requests-remaining"] ||
+    null
+  );
+}
+
+async function logApiSuccess(endpoint, response, startMs) {
+  try {
+    await ApiFootballCall.create({
+      endpoint,
+      method: "GET",
+      source: SOURCE,
+      user: null, // ✅ cron
+      apiProvider: "api-football",
+      costUnit: 1,
+      statusCode: response.status,
+      success: true,
+      responseTimeMs: Date.now() - startMs,
+      remainingRequests: getRemaining(response.headers),
+    });
+  } catch (e) {
+    // no rompas el cron por logging
+  }
+}
+
+async function logApiError(endpoint, err, startMs) {
+  try {
+    await ApiFootballCall.create({
+      endpoint,
+      method: "GET",
+      source: SOURCE,
+      user: null, // ✅ cron
+      apiProvider: "api-football",
+      costUnit: 1,
+      statusCode: err?.response?.status || 500,
+      success: false,
+      responseTimeMs: Date.now() - startMs,
+      remainingRequests: getRemaining(err?.response?.headers),
+      errorMessage: err?.message,
+    });
+  } catch (e) {
+    // no rompas el cron por logging
+  }
+}
 
 // 🚀 Función principal: actualiza partidos en vivo y finalizados de ligas prioritarias
 async function runUpdate() {
@@ -31,8 +81,8 @@ async function runUpdate() {
 
     for (const fixture of fixturesToday) {
       const leagueId = fixture.leagueId;
-      // console.log(leagueId)
       if (!isPriorityCompetition(leagueId)) continue;
+
       const fixtureDate = new Date(fixture.date).getTime();
       if (fixtureDate > now) continue; // aún no empieza
 
@@ -41,7 +91,10 @@ async function runUpdate() {
       }).lean();
 
       // ⛔ ya terminó
-      if (liveMatch?.status?.short && ["FT", "AET", "PEN"].includes(liveMatch.status.short)) {
+      if (
+        liveMatch?.status?.short &&
+        ["FT", "AET", "PEN"].includes(liveMatch.status.short)
+      ) {
         continue;
       }
 
@@ -53,10 +106,7 @@ async function runUpdate() {
         continue;
       }
 
-      const result = await fetchAndUpsertLiveMatch(
-        fixture.fixtureId,
-        liveMatch
-      );
+      const result = await fetchAndUpsertLiveMatch(fixture.fixtureId);
 
       if (result.ok) {
         updated++;
@@ -65,7 +115,7 @@ async function runUpdate() {
     }
 
     console.log(
-      `✅ Cron ${new Date().toISOString()} | Updated: ${updated} | API calls: ${apiCalls}`
+      `✅ Cron ${new Date().toISOString()} | Updated: ${updated} | API calls: ${apiCalls}`,
     );
   } catch (error) {
     console.error("❌ runUpdate error:", error.message);
@@ -74,19 +124,28 @@ async function runUpdate() {
 
 // --- HELPERS ---
 async function fetchAndUpsertLiveMatch(fixtureId) {
+  const headers = { "x-apisports-key": API_KEY };
+  let apiCalls = 0;
+
   try {
-    const headers = { "x-apisports-key": API_KEY };
-    let apiCalls = 0;
+    // 1) /fixtures (base)
+    const startFixture = Date.now();
+    let fixtureRes;
+    try {
+      fixtureRes = await axios.get(`${API_URL}/fixtures`, {
+        headers,
+        params: { id: fixtureId },
+        timeout: 10000,
+      });
+      apiCalls++;
+      await logApiSuccess("/fixtures", fixtureRes, startFixture);
+    } catch (err) {
+      await logApiError("/fixtures", err, startFixture);
+      return { ok: false, apiCalls };
+    }
 
-    // Siempre traemos info básica del fixture (status, goles, minuto, etc.)
-    const { data: fixtureData } = await axios.get(`${API_URL}/fixtures`, {
-      headers,
-      params: { id: fixtureId },
-      timeout: 10000,
-    });
-    apiCalls++;
-
-    if (!fixtureData.response?.length) return { ok: false, apiCalls };
+    const fixtureData = fixtureRes.data;
+    if (!fixtureData?.response?.length) return { ok: false, apiCalls };
     const apiFixture = fixtureData.response[0];
 
     await Fixture.findOneAndUpdate(
@@ -105,50 +164,65 @@ async function fetchAndUpsertLiveMatch(fixtureId) {
           lastUpdated: new Date(),
         },
       },
-      { upsert: true, new: true }
+      { upsert: true, new: true },
     );
 
-    // --- Traemos datos dinámicos ---
-    const { data: eventsData } = await axios.get(`${API_URL}/fixtures/events`, {
-      headers,
-      params: { fixture: fixtureId },
-    });
-    apiCalls++;
-
-    const { data: statsData } = await axios.get(
-      `${API_URL}/fixtures/statistics`,
-      {
+    // 2) /fixtures/events
+    const startEvents = Date.now();
+    let eventsRes;
+    try {
+      eventsRes = await axios.get(`${API_URL}/fixtures/events`, {
         headers,
         params: { fixture: fixtureId },
-      }
-    );
-    apiCalls++;
+      });
+      apiCalls++;
+      await logApiSuccess("/fixtures/events", eventsRes, startEvents);
+    } catch (err) {
+      await logApiError("/fixtures/events", err, startEvents);
+      return { ok: false, apiCalls };
+    }
+    const eventsData = eventsRes.data;
+
+    // 3) /fixtures/statistics
+    const startStats = Date.now();
+    let statsRes;
+    try {
+      statsRes = await axios.get(`${API_URL}/fixtures/statistics`, {
+        headers,
+        params: { fixture: fixtureId },
+      });
+      apiCalls++;
+      await logApiSuccess("/fixtures/statistics", statsRes, startStats);
+    } catch (err) {
+      await logApiError("/fixtures/statistics", err, startStats);
+      return { ok: false, apiCalls };
+    }
+    const statsData = statsRes.data;
 
     // 🔎 Revisamos si ya tenemos lineups en DB
     const liveMatch = await LiveMatch.findOne({ fixtureId }).lean();
     let lineups = liveMatch?.lineups || [];
     let lineupsChecked = liveMatch?.lineupsChecked || false;
 
-    // Solo consultamos /lineups una vez
+    // 4) /fixtures/lineups (solo una vez)
     if (!lineupsChecked) {
+      const startLineups = Date.now();
       try {
-        const { data: lineupsData } = await axios.get(
-          `${API_URL}/fixtures/lineups`,
-          {
-            headers,
-            params: { fixture: fixtureId },
-          }
-        );
-        lineups = lineupsData.response || [];
-        lineupsChecked = true; // marcamos que ya intentamos
+        const lineupsRes = await axios.get(`${API_URL}/fixtures/lineups`, {
+          headers,
+          params: { fixture: fixtureId },
+        });
         apiCalls++;
+        await logApiSuccess("/fixtures/lineups", lineupsRes, startLineups);
+
+        lineups = lineupsRes.data?.response || [];
+        lineupsChecked = true;
       } catch (err) {
-        console.error(
-          `❌ Error al consultar lineups (${fixtureId}):`,
-          err.message
-        );
+        await logApiError("/fixtures/lineups", err, startLineups);
+
+        console.error(`❌ Error al consultar lineups (${fixtureId}):`, err.message);
         lineups = []; // fallback
-        lineupsChecked = true; // igual marcamos para no repetir
+        lineupsChecked = true; // no repetir
       }
     }
 
@@ -163,23 +237,20 @@ async function fetchAndUpsertLiveMatch(fixtureId) {
           teams: apiFixture.teams,
           goals: apiFixture.goals,
           status: apiFixture.fixture.status,
-          events: eventsData.response || [],
-          statistics: statsData.response || [],
+          events: eventsData?.response || [],
+          statistics: statsData?.response || [],
           lineups,
-           lineupsChecked,
+          lineupsChecked,
           lastUpdated: new Date(),
         },
       },
-      { upsert: true, new: true }
+      { upsert: true, new: true },
     ).lean();
 
     return { ok: true, apiCalls };
   } catch (err) {
-    console.error(
-      `❌ Error consultando API Live (fixture ${fixtureId}):`,
-      err.message
-    );
-    return { ok: false, apiCalls: 0 };
+    // si fue un error no contemplado
+    return { ok: false, apiCalls };
   }
 }
 

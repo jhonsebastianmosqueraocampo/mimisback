@@ -30,6 +30,9 @@ const oneByOneRoute = require("./routes/oneByOne.js");
 const shortRoute = require("./routes/short.js");
 const analysisRoute = require("./routes/analysis.js");
 const storeRoute = require("./routes/store.js");
+const apiFootballRoute = require("./routes/apiFootball.js");
+const quizRoute = require("./routes/quiz.js");
+const funFactRoute = require("./routes/funFact.js");
 const updateFixtures = require("./cron/downloadFixtures.js");
 const startNewsCleanup = require("./cron/newsCleanup.js");
 const startNotificationFixtures = require("./cron/notifyFixtures.js");
@@ -75,6 +78,10 @@ app.use("/api/userNews", userNewsRoute);
 app.use("/api/weeklySyntheticTop", weeklySyntheticTopRoute);
 app.use("/api/weeklyWorldTop", weeklyWorldTopRoute);
 app.use("/api/youtube", youtubeRoute);
+app.use("/api/apiFootball", apiFootballRoute);
+app.use("/api/quiz", quizRoute);
+app.use("/api/funFact", funFactRoute);
+
 
 const startServer = async () => {
   try {

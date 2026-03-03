@@ -5,16 +5,8 @@ const router = Router();
 
 const storeController = require("../controllers/store.js");
 const middleware = require("../middlewares/auth");
-const path = require("path");
 
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, "images"),
-  filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase();
-    const filename = `${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`;
-    cb(null, filename);
-  },
-});
+const storage = multer.memoryStorage();
 
 const fileFilter = (_req, file, cb) => {
   const allowed = ["image/jpeg", "image/png", "image/webp"];
@@ -27,11 +19,14 @@ const fileFilter = (_req, file, cb) => {
 const upload = multer({
   storage,
   fileFilter,
-  limits: { fileSize: 4 * 1024 * 1024 }, // 4MB
+  limits: { fileSize: 4 * 1024 * 1024 },
 });
 
 //checkear role del usuario 
 router.get('/checkUserRole', middleware.auth, storeController.checkUserRole)
+
+//obtener usuarios de las tiendas
+router.get('/getStores', middleware.auth, storeController.getStores)
 
 //crear usuario administrador
 router.post('/createAdmin', storeController.createAdmin)
@@ -108,7 +103,7 @@ router.get('/profile', middleware.auth, storeController.profile)
 //editar perfil storeuser
 router.put('/profile', middleware.auth, storeController.editProfile)
 
-//imagenes
-router.get('/image/:filename', storeController.getImage)
+router.get('/getOrders', middleware.auth, storeController.getOrders)
+router.get('/getInvoices', middleware.auth, storeController.getInvoices)
 
 module.exports = router;

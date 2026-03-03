@@ -9,21 +9,23 @@ const API_URL = process.env.API_URL;
 const getNationalLeagues = async (req, res) => {
   try {
     const now = new Date();
+    const userId = req.user.id;
 
     // Buscar el último torneo SIN selección asociada (solo torneos globales)
     const lastLeague = await NationalLeague.findOne({ team: null })
       .sort({ updatedAt: -1 })
       .lean();
 
-    // 🕐 Verificar si los datos en DB son recientes (<24h)
+    // Verificar si los datos en DB son recientes (<24h)
     if (lastLeague) {
-      const hoursDiff = (now - new Date(lastLeague.updatedAt)) / (1000 * 60 * 60);
+      const hoursDiff =
+        (now - new Date(lastLeague.updatedAt)) / (1000 * 60 * 60);
+
       if (hoursDiff < 24) {
         const leagues = await NationalLeague.find({ team: null })
           .sort({ "country.name": 1, name: 1 })
           .lean();
 
-        // ✅ Formatear igual que el frontend espera
         const formatted = leagues.map((l) => ({
           leagueId: l.leagueId,
           name: l.name,
@@ -34,20 +36,63 @@ const getNationalLeagues = async (req, res) => {
         }));
 
         return res.json({
-          status: 'success',
+          status: "success",
           tournaments: formatted,
         });
       }
     }
 
-    // 🛰️ Consultar API si no hay datos o están viejos
-    const response = await axios.get(`${API_URL}/leagues?type=Cup`, {
-      headers: { "x-apisports-key": API_KEY },
-    });
+    /* ===========================
+       LLAMADO A API-FOOTBALL
+    ============================ */
 
-    const allLeagues = response.data.response || [];
+    const start = Date.now();
+    let response;
 
-    // 🌍 Filtrar solo torneos de selecciones nacionales
+    try {
+      response = await axios.get(`${API_URL}/leagues`, {
+        headers: { "x-apisports-key": API_KEY },
+        params: { type: "Cup" },
+      });
+
+      await ApiFootballCall.create({
+        endpoint: "/leagues",
+        method: "GET",
+        source: "manual",
+        user: userId || null,
+        apiProvider: "api-football",
+        costUnit: 1,
+        statusCode: response.status,
+        success: true,
+        responseTimeMs: Date.now() - start,
+        remainingRequests:
+          response.headers?.["x-ratelimit-requests-remaining"] || null,
+      });
+    } catch (err) {
+      await ApiFootballCall.create({
+        endpoint: "/leagues",
+        method: "GET",
+        source: "manual",
+        user: userId || null,
+        apiProvider: "api-football",
+        costUnit: 1,
+        statusCode: err.response?.status || 500,
+        success: false,
+        responseTimeMs: Date.now() - start,
+        remainingRequests:
+          err.response?.headers?.["x-ratelimit-requests-remaining"] || null,
+        errorMessage: err.message,
+      });
+
+      return res.json({
+        success: "error",
+        message: "Error al consultar torneos en API-Football",
+      });
+    }
+
+    const allLeagues = response.data?.response || [];
+
+    // Filtrar solo torneos de selecciones nacionales
     const nationalLeagues = allLeagues.filter((l) =>
       [
         "World",
@@ -57,10 +102,10 @@ const getNationalLeagues = async (req, res) => {
         "Africa",
         "Asia",
         "Oceania",
-      ].includes(l.country.name)
+      ].includes(l?.country?.name),
     );
 
-    // 💾 Guardar / actualizar en la base de datos
+    // Guardar / actualizar en la base de datos
     for (const league of nationalLeagues) {
       await NationalLeague.findOneAndUpdate(
         { leagueId: league.league.id, team: null },
@@ -74,11 +119,11 @@ const getNationalLeagues = async (req, res) => {
           team: null,
           updatedAt: now,
         },
-        { upsert: true, new: true }
+        { upsert: true, new: true },
       );
     }
 
-    // ✅ Formatear la respuesta al mismo formato que el frontend
+    // Formatear respuesta
     const formatted = nationalLeagues.map((l) => ({
       leagueId: l.league.id,
       name: l.league.name,
@@ -89,7 +134,7 @@ const getNationalLeagues = async (req, res) => {
     }));
 
     return res.json({
-      status: 'success',
+      status: "success",
       tournaments: formatted,
     });
   } catch (error) {
@@ -102,6 +147,7 @@ const getNationalLeagues = async (req, res) => {
 
 const getTournamentsFromCountry = async (req, res) => {
   const { country } = req.params;
+
   try {
     if (!country) {
       return res.json({
@@ -109,6 +155,8 @@ const getTournamentsFromCountry = async (req, res) => {
         message: "Debes especificar el nombre del país (por ejemplo: Colombia)",
       });
     }
+
+    const userId = req.user?.id || null;
 
     // Buscar si ya hay registros recientes
     const existing = await NationalLeague.find({
@@ -129,18 +177,65 @@ const getTournamentsFromCountry = async (req, res) => {
         ...l,
         seasons: l.seasons?.filter((s) => s.current) || [],
       }));
+
       return res.json({
         status: "success",
         tournaments: leaguesWithCurrentSeason,
       });
     }
 
-    // Obtener ID de la selección
-    const teamResponse = await axios.get(`${API_URL}/teams?name=${country}`, {
-      headers: { "x-apisports-key": API_KEY },
-    });
+    /* ===========================
+       🔹 1) /teams (buscar selección)
+    ============================ */
 
-    const teamData = teamResponse.data.response.find((t) => t.team.national);
+    const startTeams = Date.now();
+    let teamResponse;
+
+    try {
+      teamResponse = await axios.get(`${API_URL}/teams`, {
+        headers: { "x-apisports-key": API_KEY },
+        params: { name: country },
+      });
+
+      await ApiFootballCall.create({
+        endpoint: "/teams",
+        method: "GET",
+        source: "manual",
+        user: userId,
+        apiProvider: "api-football",
+        costUnit: 1,
+        statusCode: teamResponse.status,
+        success: true,
+        responseTimeMs: Date.now() - startTeams,
+        remainingRequests:
+          teamResponse.headers?.["x-ratelimit-requests-remaining"] || null,
+      });
+    } catch (err) {
+      await ApiFootballCall.create({
+        endpoint: "/teams",
+        method: "GET",
+        source: "manual",
+        user: userId,
+        apiProvider: "api-football",
+        costUnit: 1,
+        statusCode: err.response?.status || 500,
+        success: false,
+        responseTimeMs: Date.now() - startTeams,
+        remainingRequests:
+          err.response?.headers?.["x-ratelimit-requests-remaining"] || null,
+        errorMessage: err.message,
+      });
+
+      return res.json({
+        status: "error",
+        message: "Error consultando la selección en API-Football",
+      });
+    }
+
+    const teamData = (teamResponse.data?.response || []).find(
+      (t) => t?.team?.national,
+    );
+
     if (!teamData) {
       return res.json({
         status: "error",
@@ -150,16 +245,56 @@ const getTournamentsFromCountry = async (req, res) => {
 
     const teamId = teamData.team.id;
 
-    // Obtener torneos donde ha jugado la selección
-    const leagueResponse = await axios.get(
-      `${API_URL}/leagues?team=${teamId}`,
-      {
-        headers: { "x-apisports-key": API_KEY },
-      }
-    );
+    /* ===========================
+       🔹 2) /leagues (torneos por team)
+    ============================ */
 
-    const tournaments = leagueResponse.data.response.filter(
-      (l) => l.league.type === "Cup"
+    const startLeagues = Date.now();
+    let leagueResponse;
+
+    try {
+      leagueResponse = await axios.get(`${API_URL}/leagues`, {
+        headers: { "x-apisports-key": API_KEY },
+        params: { team: teamId },
+      });
+
+      await ApiFootballCall.create({
+        endpoint: "/leagues",
+        method: "GET",
+        source: "manual",
+        user: userId,
+        apiProvider: "api-football",
+        costUnit: 1,
+        statusCode: leagueResponse.status,
+        success: true,
+        responseTimeMs: Date.now() - startLeagues,
+        remainingRequests:
+          leagueResponse.headers?.["x-ratelimit-requests-remaining"] || null,
+      });
+    } catch (err) {
+      await ApiFootballCall.create({
+        endpoint: "/leagues",
+        method: "GET",
+        source: "manual",
+        user: userId,
+        apiProvider: "api-football",
+        costUnit: 1,
+        statusCode: err.response?.status || 500,
+        success: false,
+        responseTimeMs: Date.now() - startLeagues,
+        remainingRequests:
+          err.response?.headers?.["x-ratelimit-requests-remaining"] || null,
+        errorMessage: err.message,
+      });
+
+      return res.json({
+        status: "error",
+        message: "Error consultando torneos en API-Football",
+      });
+    }
+
+    const tournaments = (leagueResponse.data?.response || []).filter(
+      (l) => l?.league?.type === "Cup",
     );
 
     if (!tournaments.length) {
@@ -188,7 +323,7 @@ const getTournamentsFromCountry = async (req, res) => {
           seasons: league.seasons || [],
           updatedAt: now,
         },
-        { upsert: true, new: true }
+        { upsert: true, new: true },
       );
     }
 

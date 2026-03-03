@@ -7,8 +7,8 @@ const jwt = require("../services/jwt");
 const bcrypt = require("bcrypt");
 const { sendInviteEmail } = require("../services/mailer");
 const path = require("path");
-const fs = require("fs");
 const { sendStatusEmail } = require("../services/mailer");
+const { uploadToR2 } = require("../config/r2");
 
 /* ================= HELPERS ================= */
 
@@ -120,7 +120,6 @@ const generateCode = async (req, res) => {
     try {
       await sendInviteEmail({ to: email, code });
     } catch (mailError) {
-      console.error("❌ Email send failed:", mailError);
       return res.json({
         status: "success",
         message: "Code generated but email failed",
@@ -132,7 +131,6 @@ const generateCode = async (req, res) => {
       message: "Code generated successfully",
     });
   } catch (error) {
-    console.log(error);
     return res.json({
       status: "error",
       message: "Internal server error. Please, try again",
@@ -311,7 +309,15 @@ const registerStore = async (req, res) => {
       });
     }
 
-    const imageUrl = req.file?.filename ? req.file.filename : undefined;
+    let imageUrl;
+    if (req.file) {
+      imageUrl = await uploadToR2({
+        buffer: req.file.buffer,
+        mimetype: req.file.mimetype,
+        folder: "stores",
+        filename: req.file.originalname,
+      });
+    }
 
     const store = await Store.create({
       owner: storeUser._id,
@@ -427,8 +433,15 @@ const editStore = async (req, res) => {
     }
 
     // 🖼 Imagen opcional
-    if (req.file?.filename) {
-      store.image = req.file.filename;
+    if (req.file) {
+      const imageUrl = await uploadToR2({
+        buffer: req.file.buffer,
+        mimetype: req.file.mimetype,
+        folder: "stores",
+        filename: req.file.originalname,
+      });
+
+      store.image = imageUrl;
     }
 
     await store.save();
@@ -438,7 +451,6 @@ const editStore = async (req, res) => {
       store,
     });
   } catch (error) {
-    console.error(error);
     return res.status(error.code || 500).json({
       status: "error",
       message: "Internal server error",
@@ -541,8 +553,15 @@ const updateStore = async (req, res) => {
     }
 
     // 🖼 Imagen opcional
-    if (req.file?.filename) {
-      store.image = req.file.filename;
+    if (req.file) {
+      const imageUrl = await uploadToR2({
+        buffer: req.file.buffer,
+        mimetype: req.file.mimetype,
+        folder: "stores",
+        filename: req.file.originalname,
+      });
+
+      store.image = imageUrl;
     }
 
     await store.save();
@@ -552,8 +571,6 @@ const updateStore = async (req, res) => {
       store,
     });
   } catch (error) {
-    console.error(error);
-
     return res.status(error.code || 500).json({
       status: "error",
       message: "Internal server error",
@@ -686,7 +703,6 @@ const productsList = async (req, res) => {
       products: enriched,
     });
   } catch (error) {
-    console.error(error);
     return res.status(500).json({
       status: "error",
       message: "Internal server error",
@@ -731,7 +747,6 @@ const productsByCategory = async (req, res) => {
 
     return res.json({ status: "success", products });
   } catch (error) {
-    console.error(error);
     return res
       .status(500)
       .json({ status: "error", message: "Internal server error" });
@@ -767,7 +782,6 @@ const productsByStore = async (req, res) => {
 
     return res.json({ status: "success", products });
   } catch (error) {
-    console.error(error);
     return res
       .status(error.code || 500)
       .json({ status: "error", message: "Internal server error" });
@@ -807,7 +821,6 @@ const deleteProduct = async (req, res) => {
     await Product.deleteOne({ _id: productId });
     return res.json({ status: "success", message: "Product deleted" });
   } catch (error) {
-    console.error(error);
     return res
       .status(500)
       .json({ status: "error", message: "Internal server error" });
@@ -880,9 +893,20 @@ const createProduct = async (req, res) => {
 
     const filesByField = groupFilesByField(req.files);
 
-    const finalVariants = variants.map((v, idx) => {
+    const finalVariants = variants.map(async (v, idx) => {
       const newFiles = filesByField[`variantImages_${idx}`] || [];
-      const newUrls = newFiles.map((f) => toLocalImageUrl(req, f.filename));
+      const newUrls = [];
+
+      for (const f of newFiles) {
+        const url = await uploadToR2({
+          buffer: f.buffer,
+          mimetype: f.mimetype,
+          folder: "products",
+          filename: f.originalname,
+        });
+
+        newUrls.push(url);
+      }
 
       return {
         color: v.color,
@@ -1041,7 +1065,6 @@ const updateProduct = async (req, res) => {
 
     return res.json({ status: "success", product });
   } catch (error) {
-    console.error(error);
     return res.status(error.code || 500).json({
       status: "error",
       message: "Internal server error",
@@ -1218,7 +1241,6 @@ const createOrders = async (req, res) => {
       orders: createdOrders,
     });
   } catch (error) {
-    console.error(error);
     return res.status(500).json({
       status: "error",
       message: "Internal server error",
@@ -1254,7 +1276,6 @@ const userOrders = async (req, res) => {
 
     return res.json({ status: "success", purchases });
   } catch (error) {
-    console.error(error);
     return res
       .status(500)
       .json({ status: "error", message: "Internal server error" });
@@ -1285,7 +1306,6 @@ const productsOrders = async (req, res) => {
 
     return res.json({ status: "success", orders });
   } catch (error) {
-    console.error(error);
     return res
       .status(error.code || 500)
       .json({ status: "error", message: "Internal server error" });
@@ -1343,7 +1363,6 @@ const productsOwnerOrders = async (req, res) => {
 
     return res.json({ status: "success", orders });
   } catch (error) {
-    console.error(error);
     return res
       .status(500)
       .json({ status: "error", message: "Internal server error" });
@@ -1445,7 +1464,6 @@ const updateOrderStatus = async (req, res) => {
         path: "user",
         select: "nickName email",
       })
-      .lean();
     if (!order)
       return res
         .status(404)
@@ -1471,7 +1489,6 @@ const updateOrderStatus = async (req, res) => {
 
     return res.json({ status: "success", order });
   } catch (error) {
-    console.error(error);
     return res
       .status(error.code || 500)
       .json({ status: "error", message: "Internal server error" });
@@ -1500,7 +1517,6 @@ const deleteOrder = async (req, res) => {
     await Order.deleteOne({ _id: orderId });
     return res.json({ status: "success", message: "Order deleted" });
   } catch (error) {
-    console.error(error);
     return res
       .status(500)
       .json({ status: "error", message: "Internal server error" });
@@ -1574,11 +1590,25 @@ const checkUserRole = async (req, res) => {
     }
 
     const role = user.role ?? "";
-    console.log(role);
 
     return res.json({
       status: "success",
       isAdmin: role === "admin" ? true : false,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      status: "error",
+      message: "Internal server error",
+    });
+  }
+};
+
+const getStores = async (req, res) => {
+  try {
+    const stores = await Store.find().lean();
+    return res.json({
+      status: "success",
+      stores,
     });
   } catch (error) {
     return res.status(500).json({
@@ -1670,20 +1700,104 @@ const editProfile = async (req, res) => {
   }
 };
 
-const getImage = async (req, res) => {
+const getOrders = async (req, res) => {
   try {
-    const { filename } = req.params;
-    const imagePath = path.join(__dirname, "..", "images", filename);
-    res.sendFile(imagePath);
+    const orders = await Order.find()
+      .populate("user", "nickName email")
+      .populate("store", "name")
+      .populate("items.productId", "name")
+      .lean();
+
+    const formatted = orders.map((order) => ({
+      id: order._id,
+      user: order.user?.nickName || "Sin usuario",
+      store: order.store?.name || "Sin tienda",
+      date: order.orderDate,
+      status: order.status,
+      totalPoints: order.totalPoints,
+      totalMoney: order.items.reduce(
+        (acc, item) => acc + item.price * item.quantity,
+        0,
+      ),
+      items: order.items.map((item) => ({
+        product: item.name,
+        points: item.price,
+        money: item.price,
+        quantity: item.quantity,
+      })),
+    }));
+
+    return res.json({
+      status: "success",
+      orders: formatted,
+    });
   } catch (error) {
-    return res.status(404).json({
+    return res.status(500).json({
       status: "error",
-      message: "Image not found",
+      message: "Error loading orders",
+    });
+  }
+};
+
+const getInvoices = async (req, res) => {
+  try {
+    const invoices = await Order.aggregate([
+      {
+        $match: {
+          status: { $in: ["delivered", "confirmed"] },
+        },
+      },
+      {
+        $lookup: {
+          from: "stores",
+          localField: "store",
+          foreignField: "_id",
+          as: "store",
+        },
+      },
+      { $unwind: "$store" },
+      {
+        $group: {
+          _id: {
+            storeId: "$store._id",
+            storeName: "$store.name",
+            month: {
+              $dateToString: { format: "%Y-%m", date: "$orderDate" },
+            },
+          },
+          total: { $sum: "$totalPoints" },
+          users: { $addToSet: "$user" },
+        },
+      },
+      {
+        $project: {
+          _id: 0,
+          store: "$_id.storeName",
+          month: "$_id.month",
+          total: 1,
+          users: { $size: "$users" },
+          date: "$_id.month",
+        },
+      },
+      {
+        $sort: { date: -1 },
+      },
+    ]);
+
+    return res.json({
+      status: "success",
+      invoices,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      status: "error",
+      message: "Error generating invoices",
     });
   }
 };
 
 module.exports = {
+  getStores,
   // web/admin
   generateCode,
   completeStoreUserRegistration,
@@ -1719,5 +1833,7 @@ module.exports = {
 
   profile,
   editProfile,
-  getImage,
+
+  getOrders,
+  getInvoices,
 };

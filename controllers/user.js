@@ -23,12 +23,49 @@ const getUser = async (req, res) => {
 const getUsers = async (req, res) => {
   try {
     const users = await User.find().select("-password").lean();
+
+    const now = new Date();
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(now.getDate() - 7);
+
+    // Agregar campo activo dinámico
+    const usersWithStatus = users.map((user) => {
+      const isActive =
+        user.lastActivity && new Date(user.lastActivity) >= sevenDaysAgo;
+
+      return {
+        ...user,
+        active: isActive,
+      };
+    });
+
+    const totalUsers = users.length;
+    const activeUsers = usersWithStatus.filter((u) => u.active).length;
+    const inactiveUsers = totalUsers - activeUsers;
+
+    const totalPointsGenerated = users.reduce(
+      (acc, u) => acc + (u.points || 0),
+      0,
+    );
+
+    const totalPointsRedeemed = users.reduce(
+      (acc, u) => acc + (u.redeemed || 0),
+      0,
+    );
+
     return res.json({
       status: "success",
-      users,
+      metrics: {
+        totalUsers,
+        activeUsers,
+        inactiveUsers,
+        totalPointsGenerated,
+        totalPointsRedeemed,
+      },
+      users: usersWithStatus,
     });
   } catch (error) {
-    return res.json({
+    return res.status(500).json({
       status: "error",
       message: "An error was found. Please, try again",
     });
