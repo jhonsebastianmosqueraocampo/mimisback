@@ -3,7 +3,7 @@ const { uploadToR2, deleteFromR2 } = require("../config/r2");
 
 const save = async (req, res) => {
   try {
-    const { week } = req.body;
+    const { week, leagueName } = req.body;
 
     if (!req.files?.video?.length) {
       return res.json({
@@ -35,6 +35,7 @@ const save = async (req, res) => {
 
     const newVideo = new WorldVideo({
       week,
+      leagueName: (leagueName || "").trim(),
       video: videoUrl,
       thumbail: thumbUrl,
     });
@@ -47,7 +48,6 @@ const save = async (req, res) => {
       video: newVideo,
     });
   } catch (error) {
-    console.error(error);
     return res.status(500).json({
       status: "error",
       message: "Error saving video",
@@ -135,7 +135,7 @@ const deleteWeekVideo = async (req, res) => {
 const updateWeekVideo = async (req, res) => {
   try {
     const { id } = req.params;
-    const { week } = req.body;
+    const { week, leagueName } = req.body;
 
     const videoDoc = await WorldVideo.findById(id);
     if (!videoDoc) {
@@ -179,6 +179,9 @@ const updateWeekVideo = async (req, res) => {
     }
 
     if (week) videoDoc.week = week;
+    if (typeof leagueName === "string") {
+      videoDoc.leagueName = leagueName.trim();
+    }
 
     await videoDoc.save();
 

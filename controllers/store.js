@@ -613,7 +613,6 @@ const productsList = async (req, res) => {
 
     const lat = Number(req.query.lat);
     const lng = Number(req.query.lng);
-
     if (
       isNaN(lat) ||
       isNaN(lng) ||
@@ -628,7 +627,7 @@ const productsList = async (req, res) => {
       });
     }
 
-    // 🔥 1️⃣ Buscar tiendas a 20km
+    // Buscar tiendas a 20km
     const nearbyStores = await Store.find({
       location: {
         $near: {
@@ -642,6 +641,8 @@ const productsList = async (req, res) => {
     })
       .select("_id name")
       .lean();
+
+    console.log(nearbyStores)  
 
     if (!nearbyStores.length) {
       return res.json({

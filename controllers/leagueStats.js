@@ -1,5 +1,5 @@
 const axios = require("axios");
-const LeagueStats = require("../models/leagueStats.js")
+const LeagueStats = require("../models/leagueStats.js");
 const ApiFootballCall = require("../models/apifootballCals.js");
 const { getCurrentSeason } = require("../helper/getCurrentSeason.js");
 require("dotenv").config();
@@ -18,21 +18,12 @@ function nz(v) {
 
 async function axiosGetWithRetry(
   url,
-  config = {},
-  retries = 4,
-  userId = null,
-  source = "system"
+  { config = {}, retries = 4, userId = null, source = "system" } = {},
 ) {
   for (let i = 0; i <= retries; i++) {
     const start = Date.now();
-
     try {
-      const response = await axios.get(url, {
-        timeout: 20000,
-        ...config,
-      });
-
-      // 🔹 Registrar éxito
+      const response = await axios.get(url, { timeout: 20000, ...config });
       await ApiFootballCall.create({
         endpoint: new URL(url).pathname,
         method: "GET",
@@ -47,15 +38,11 @@ async function axiosGetWithRetry(
         remainingRequests:
           response.headers?.["x-ratelimit-requests-remaining"] || null,
       });
-
       return response;
     } catch (err) {
       const status = err?.response?.status;
-      const retryAfter = Number(
-        err?.response?.headers?.["retry-after"] || 0
-      );
+      const retryAfter = Number(err?.response?.headers?.["retry-after"] || 0);
 
-      // 🔹 Registrar error del intento
       await ApiFootballCall.create({
         endpoint: new URL(url).pathname,
         method: "GET",
@@ -78,10 +65,6 @@ async function axiosGetWithRetry(
         status === 429
           ? Math.max(retryAfter * 1000, 1500 * (i + 1))
           : 800 * (i + 1);
-
-      console.warn(
-        `⚠️ API-Football retry ${i + 1}/${retries} status=${status} wait=${waitMs}ms`
-      );
 
       await sleep(waitMs);
     }
@@ -178,7 +161,15 @@ const listLeagueStats = async (req, res) => {
     };
 
     for (const ep of endpoints) {
-      const { data } = await axiosGetWithRetry(`${API_URL}/${ep.url}`, {headers: { "x-apisports-key": API_KEY },params: { league: leagueId, season },}, userId);
+      const { data } = await axiosGetWithRetry(`${API_URL}/${ep.url}`, {
+        config: {
+          headers: { "x-apisports-key": API_KEY },
+          params: { league: leagueId, season },
+        },
+        userId,
+        retries: 4,
+        source: "system",
+      });
 
       result[ep.key] = (data?.response || [])
         .slice(0, 10)
@@ -195,6 +186,7 @@ const listLeagueStats = async (req, res) => {
 
     return res.json({ status: "success", stats: doc, cached: false });
   } catch (error) {
+    console.log(error);
     return res.json({ status: "error", message: "Server error" });
   }
 };

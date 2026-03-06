@@ -21,12 +21,20 @@ router.post(
     { name: "video", maxCount: 1 },
     { name: "thumbail", maxCount: 1 },
   ]),
-  weeklyWorldTopController.save
+  weeklyWorldTopController.save,
 );
 
 router.get("/videos", middleware.auth, weeklyWorldTopController.videos);
-router.get("/weekVideo/:week", middleware.auth, weeklyWorldTopController.getWeekVideo);
-router.delete("/weekVideo/:id", middleware.auth, weeklyWorldTopController.deleteWeekVideo);
+router.get(
+  "/weekVideo/:week",
+  middleware.auth,
+  weeklyWorldTopController.getWeekVideo,
+);
+router.delete(
+  "/weekVideo/:id",
+  middleware.auth,
+  weeklyWorldTopController.deleteWeekVideo,
+);
 
 router.put(
   "/weekVideo/:id",
@@ -35,7 +43,7 @@ router.put(
     { name: "video", maxCount: 1 },
     { name: "thumbail", maxCount: 1 },
   ]),
-  weeklyWorldTopController.updateWeekVideo
+  weeklyWorldTopController.updateWeekVideo,
 );
 
 module.exports = router;

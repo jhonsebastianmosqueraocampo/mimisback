@@ -405,7 +405,6 @@ const getYoutubeVideosFavorites = async (req, res) => {
     });
 
   } catch (error) {
-    console.log(error);
     return res.json({
       status: "error",
       message: "An error was found. Try again",
