@@ -4,6 +4,7 @@ const { getCurrentSeason } = require("../helper/getCurrentSeason.js");
 const LiveMatch = require("../models/LiveMatch.js");
 const Fixture = require("../models/fixture");
 const ApiFootballCall = require("../models/apifootballCals.js");
+const { registerSearch } = require('../helper/registerTrendingItem.js')
 require("dotenv").config();
 
 const API_KEY = process.env.API_FOOTBALL_KEY;
@@ -64,7 +65,6 @@ const getPlayersByTeam = async (req, res) => {
         remainingRequests:
           response.headers?.["x-ratelimit-requests-remaining"] || null,
       });
-
     } catch (err) {
       await ApiFootballCall.create({
         endpoint: "/players/squads",
@@ -119,7 +119,7 @@ const getPlayersByTeam = async (req, res) => {
       const updated = await Player.findOneAndUpdate(
         { playerId: p.id, "team.id": teamInfo.id },
         { $set: playerData },
-        { upsert: true, new: true, setDefaultsOnInsert: true }
+        { upsert: true, new: true, setDefaultsOnInsert: true },
       );
 
       updatedPlayers.push(updated);
@@ -233,7 +233,6 @@ const infoPlayer = async (req, res) => {
         remainingRequests:
           response.headers?.["x-ratelimit-requests-remaining"] || null,
       });
-
     } catch (err) {
       await ApiFootballCall.create({
         endpoint: "/players",
@@ -288,8 +287,18 @@ const infoPlayer = async (req, res) => {
     const updatedPlayer = await Player.findOneAndUpdate(
       { playerId: Number(playerId) },
       { $set: newData },
-      { upsert: true, new: true }
+      { upsert: true, new: true },
     );
+
+    await registerSearch({
+      type: "player",
+      itemId: apiPlayer.id,
+      name: apiPlayer.name,
+      photo: apiPlayer.photo,
+      nationality: apiPlayer.nationality,
+      teamName: apiStats?.[0]?.team?.name,
+      teamLogo: apiStats?.[0]?.team?.logo,
+    });
 
     return res.json({
       status: "success",
@@ -325,7 +334,9 @@ const search = async (req, res) => {
     const localPlayers = await Player.find({
       $or: [{ name: regex }, { firstname: regex }, { lastname: regex }],
     })
-      .select("playerId name firstname lastname photo nationality updatedAt cachedAt")
+      .select(
+        "playerId name firstname lastname photo nationality updatedAt cachedAt",
+      )
       .lean();
 
     if (localPlayers.length) {
@@ -350,8 +361,8 @@ const search = async (req, res) => {
 
       const lastUpdated = Math.max(
         ...scoredPlayers.map((p) =>
-          new Date(p.cachedAt || p.updatedAt || 0).getTime()
-        )
+          new Date(p.cachedAt || p.updatedAt || 0).getTime(),
+        ),
       );
 
       const hours = (now.getTime() - lastUpdated) / (1000 * 60 * 60);
@@ -373,7 +384,7 @@ const search = async (req, res) => {
 
     try {
       const apiUrl = `${API_URL}/players/profiles?search=${encodeURIComponent(
-        queryName
+        queryName,
       )}`;
 
       response = await axios.get(apiUrl, {
@@ -468,7 +479,7 @@ const search = async (req, res) => {
       const saved = await Player.findOneAndUpdate(
         { playerId: p.playerId },
         { $set: p },
-        { upsert: true, new: true, setDefaultsOnInsert: true }
+        { upsert: true, new: true, setDefaultsOnInsert: true },
       ).select("playerId name firstname lastname photo nationality");
       savedPlayers.push(saved);
     }

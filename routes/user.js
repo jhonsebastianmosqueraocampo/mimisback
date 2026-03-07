@@ -19,7 +19,7 @@ router.get("/updatePoints", middleware.auth, userController.updatePoints);
 router.get("/updatePassword", middleware.auth, userController.updatePassword);
 router.get("/getPoints", middleware.auth, userController.getPoints);
 router.get("/getLimitAdsPerDay", middleware.auth, userController.getLimitAdsPerDay);
-router.get("/descountLimitAdsPerDayAndAddPoint", middleware.auth, userController.descountLimitAdsPerDayAndAddPoint);
+router.get("/descountLimitAdsPerDayAndAddPoint/:from", middleware.auth, userController.descountLimitAdsPerDayAndAddPoint);
 router.get("/invitationSyntheticMatch", middleware.auth, userController.invitationSyntheticMatch);
 
 module.exports = router;

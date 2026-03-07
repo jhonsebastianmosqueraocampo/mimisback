@@ -4,6 +4,7 @@ const Team = require("../models/team");
 const ApiFootballCall = require("../models/apifootballCals.js");
 const { getCurrentSeason } = require("../helper/getCurrentSeason.js");
 require("dotenv").config();
+const { registerSearch } = require('../helper/registerTrendingItem.js');
 
 const API_URL = process.env.API_URL;
 const API_KEY = process.env.API_FOOTBALL_KEY;
@@ -727,6 +728,16 @@ const getCoachInfo = async (req, res) => {
     }
 
     await coachDoc.save();
+
+    await registerSearch({
+      type: "coach",
+      itemId: apiCoach.id,
+      name: apiCoach.name,
+      photo: apiCoach.photo,
+      nationality: apiCoach.nationality,
+      teamName: apiCoach.team?.name,
+      teamLogo: apiCoach.team?.logo,
+    });
 
     return res.json({ status: "success", coach: coachDoc });
   } catch (error) {

@@ -81,6 +81,7 @@ const userSchema = new Schema({
 
   limitAdsPerDay: { type: Number, default: 20 },
   lastAdsReset: { type: Date, default: Date.now },
+  fromGame: { type: Boolean, default: false },
 
   createdAt: { type: Date, default: Date.now },
 });
@@ -121,6 +122,7 @@ userSchema.methods.checkAndResetAdsLimit = function () {
   if (isNewDay) {
     this.limitAdsPerDay = 20;
     this.lastAdsReset = now;
+    this.fromGame = false;
     return true;
   }
 

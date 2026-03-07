@@ -33,6 +33,9 @@ const storeRoute = require("./routes/store.js");
 const apiFootballRoute = require("./routes/apiFootball.js");
 const quizRoute = require("./routes/quiz.js");
 const funFactRoute = require("./routes/funFact.js");
+const searchRoute = require("./routes/search.js");
+const trendingRoute = require("./routes/trendingSearch.js");
+const notificationRoute = require("./routes/notification.js");
 const updateFixtures = require("./cron/downloadFixtures.js");
 const startNewsCleanup = require("./cron/newsCleanup.js");
 const startNotificationFixtures = require("./cron/notifyFixtures.js");
@@ -81,6 +84,9 @@ app.use("/api/youtube", youtubeRoute);
 app.use("/api/apiFootball", apiFootballRoute);
 app.use("/api/quiz", quizRoute);
 app.use("/api/funFact", funFactRoute);
+app.use("/api/search", searchRoute);
+app.use("/api/trending", trendingRoute);
+app.use("/api/notification", notificationRoute);
 
 
 const startServer = async () => {
@@ -90,7 +96,7 @@ const startServer = async () => {
     await updateFixtures();
     await startNewsCleanup();
     await startLiveMatchesCron();
-    // await startNotificationFixtures();
+    await startNotificationFixtures();
     await closePendingBets()
     
     app.listen(app.get("PORT"), "0.0.0.0", async() => {

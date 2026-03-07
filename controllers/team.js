@@ -5,6 +5,7 @@ const TeamPlayerStatByLeague = require("../models/TeamPlayerStatByLeague");
 const Squad = require("../models/squad");
 const ApiFootballCall = require("../models/apifootballCals.js");
 const { getCurrentSeason } = require("../helper/getCurrentSeason.js");
+const { registerSearch } = require("../helper/registerTrendingItem.js");
 require("dotenv").config();
 
 const { getLeaguesByTeam } = require("../helper/getLeaguesByTeam");
@@ -129,8 +130,7 @@ const getTeam = async (req, res) => {
 
     // ✅ Si ya existe en BD → no gastar request
     if (team) {
-      const isFavorite =
-        favorites?.equipos?.includes(team?.name) || false;
+      const isFavorite = favorites?.equipos?.includes(team?.name) || false;
 
       return res.json({
         status: "success",
@@ -212,6 +212,13 @@ const getTeam = async (req, res) => {
 
     const newIsFavorite =
       favorites?.equipos?.includes(responseTeam.team.name) || false;
+
+    await registerSearch({
+      type: "team",
+      itemId: responseTeam.team.id,
+      name: responseTeam.team.name,
+      photo: responseTeam.team.logo,
+    });
 
     return res.json({
       status: "success",
@@ -331,7 +338,7 @@ const getTeamPlayerStats = async (req, res) => {
             lastUpdate: now,
             players: playerStats,
           },
-          { upsert: true, new: true }
+          { upsert: true, new: true },
         );
       }
 
@@ -355,7 +362,13 @@ const getTeamPlayerStatsByLeague = async (req, res) => {
   const leagueId = parseInt(req.params.leagueId, 10);
   let season = parseInt(req.params.season, 10);
 
-  if (!teamId || !leagueId || isNaN(teamId) || isNaN(leagueId) || isNaN(season)) {
+  if (
+    !teamId ||
+    !leagueId ||
+    isNaN(teamId) ||
+    isNaN(leagueId) ||
+    isNaN(season)
+  ) {
     return res
       .status(400)
       .json({ status: "error", message: "Invalid parameters" });
@@ -456,7 +469,7 @@ const getTeamPlayerStatsByLeague = async (req, res) => {
         lastUpdate: new Date(),
         players: playerStats,
       },
-      { upsert: true, new: true }
+      { upsert: true, new: true },
     );
 
     return res.json({
@@ -607,7 +620,12 @@ const search = async (req, res) => {
     const userId = req.user?.id || null;
 
     // helpers de log
-    const logApiSuccess = async (endpoint, response, start, source = "manual") =>
+    const logApiSuccess = async (
+      endpoint,
+      response,
+      start,
+      source = "manual",
+    ) =>
       ApiFootballCall.create({
         endpoint,
         method: "GET",
@@ -670,7 +688,7 @@ const search = async (req, res) => {
       });
 
       const lastUpdated = Math.max(
-        ...scoredTeams.map((t) => new Date(t.updatedAt || 0).getTime())
+        ...scoredTeams.map((t) => new Date(t.updatedAt || 0).getTime()),
       );
       const hours = (now.getTime() - lastUpdated) / (1000 * 60 * 60);
 
@@ -745,7 +763,7 @@ const search = async (req, res) => {
       await Team.findOneAndUpdate(
         { teamId: t.teamId },
         { $set: t },
-        { upsert: true, new: true, setDefaultsOnInsert: true }
+        { upsert: true, new: true, setDefaultsOnInsert: true },
       );
     }
 

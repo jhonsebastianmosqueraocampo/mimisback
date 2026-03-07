@@ -564,7 +564,7 @@ const getLimitAdsPerDay = async (req, res) => {
 const descountLimitAdsPerDayAndAddPoint = async (req, res) => {
   try {
     const userId = req.user.id;
-
+    const { from } = req.params;
     const user = await User.findById(userId);
     if (!user)
       return res
@@ -574,25 +574,30 @@ const descountLimitAdsPerDayAndAddPoint = async (req, res) => {
     user.checkAndResetAdsLimit();
     await user.save();
 
+    const updateData = {
+      $inc: {
+        limitAdsPerDay: -1,
+        points: 5,
+        xp: 5,
+      },
+      $push: {
+        pointsHistory: {
+          action:
+            from === "game"
+              ? "Video recompensado (Juego)"
+              : "Video recompensado",
+          points: 5,
+          date: new Date(),
+        },
+      },
+    };
+
     const updatedUser = await User.findOneAndUpdate(
       {
         _id: userId,
         limitAdsPerDay: { $gt: 0 },
       },
-      {
-        $inc: {
-          limitAdsPerDay: -1,
-          points: 5,
-          xp: 5,
-        },
-        $push: {
-          pointsHistory: {
-            action: "Video recompensado",
-            points: 5,
-            date: new Date(),
-          },
-        },
-      },
+      updateData,
       { new: true },
     );
 
@@ -604,15 +609,17 @@ const descountLimitAdsPerDayAndAddPoint = async (req, res) => {
 
     updatedUser.calculateLevel();
     await updatedUser.save();
-
+    console.log(updatedUser)
     return res.json({
       status: "success",
       limit: updatedUser.limitAdsPerDay,
       points: updatedUser.points,
       xp: updatedUser.xp,
       level: updatedUser.level,
+      fromGame: updatedUser.fromGame,
     });
   } catch (error) {
+    console.log(error)
     return res.status(500).json({
       status: "error",
       message: "An error was found. Please, try again!",

@@ -76,7 +76,7 @@ const createInvitation = async (req, res) => {
 };
 
 /* =========================
-   GET ALL (ADMIN)
+   GET ALL
 ========================= */
 
 const getAll = async (req, res) => {
@@ -90,7 +90,6 @@ const getAll = async (req, res) => {
       matches: matches.map(toClient),
     });
   } catch (error) {
-    console.error(error);
     return res.status(500).json({
       status: "error",
       message: "Internal server error",
